@@ -8,8 +8,10 @@
 #define DP_RET_ERROR -1
 #define DP_RET_OK     0
 
-// Bumped whenever struct dp_ops changes shape. Plugins declaring a different
-// ABI are refused at load time rather than crashing us later.
+// Bumped whenever struct dp_ops changes shape once a real plugin has shipped.
+// Until then the structs below are fluid: extend freely without bumping.
+// Plugins declaring a different ABI are refused at load time rather than
+// crashing us later.
 #define UNOS_DATAPLANE_ABI 1
 
 // Where dlopen'd backends live. The openbcm package drops its backend here;
@@ -50,12 +52,14 @@ struct dp_port {
 struct dp_rif {
   const char     *ifname;
   struct dp_addr  addr;
+  uint32_t        table;   // kernel route-table id; RT_TABLE_MAIN = default VRF
 };
 
 struct dp_neigh {
   const char     *ifname;
   struct dp_addr  addr;
   uint8_t         mac[6];
+  uint32_t        table;   // kernel route-table id; RT_TABLE_MAIN = default VRF
 };
 
 struct dp_nexthop {
@@ -67,7 +71,8 @@ struct dp_route {
   struct dp_addr     dst;
   struct dp_nexthop *nh;
   size_t             nh_count;   // >1 = ECMP group
-  uint32_t           metric;
+  uint32_t           metric;     // RTA_PRIORITY, 0 = unset
+  uint32_t           table;      // kernel route-table id; RT_TABLE_MAIN = default VRF
 };
 
 struct dp_ops {

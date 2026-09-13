@@ -14,6 +14,9 @@
 // Mirroring any of it back into the kernel would be circular. unosd on generic
 // hardware is therefore close to inert by design: it parses configuration,
 // validates it, and lets Linux do the work.
+//
+// The table field on rif/neigh/route is accepted and ignored here: there is
+// nothing per-VRF to replicate when the kernel itself forwards.
 
 #include <stdio.h>
 

@@ -61,38 +61,40 @@ static int bcm_port_mtu(const char *ifname, uint32_t mtu) {
 }
 
 static int bcm_rif_add(const struct dp_rif *rif) {
-  // TODO: bcm_l3_intf_create
+  // TODO: bcm_l3_intf_create, keyed by rif->table for per-VRF LPM
   (void)rif;
   return DP_RET_ERROR;
 }
 
 static int bcm_rif_del(const struct dp_rif *rif) {
-  // TODO: bcm_l3_intf_delete
+  // TODO: bcm_l3_intf_delete, keyed by rif->table
   (void)rif;
   return DP_RET_ERROR;
 }
 
 static int bcm_neigh_add(const struct dp_neigh *neigh) {
-  // TODO: bcm_l3_host_add
+  // TODO: bcm_l3_host_add, keyed by neigh->table
   (void)neigh;
   return DP_RET_ERROR;
 }
 
 static int bcm_neigh_del(const struct dp_neigh *neigh) {
-  // TODO: bcm_l3_host_delete
+  // TODO: bcm_l3_host_delete, keyed by neigh->table
   (void)neigh;
   return DP_RET_ERROR;
 }
 
 static int bcm_route_add(const struct dp_route *route) {
-  // TODO: bcm_l3_route_add; for nh_count > 1 build a bcm_l3_egress_ecmp
-  //       group and refcount it across routes sharing the same nexthop set
+  // TODO: bcm_l3_route_add with vrf context from route->table; for nh_count > 1
+  //       build a bcm_l3_egress_ecmp group and refcount it per table across
+  //       routes sharing the same nexthop set
   (void)route;
   return DP_RET_ERROR;
 }
 
 static int bcm_route_del(const struct dp_route *route) {
-  // TODO: bcm_l3_route_delete, release ECMP group when refcount hits zero
+  // TODO: bcm_l3_route_delete with vrf context from route->table, release ECMP
+  //       group when refcount hits zero
   (void)route;
   return DP_RET_ERROR;
 }
