@@ -166,5 +166,6 @@ struct cnf_directive * cfg_parse_port(FILE *fd, struct cnf_directive *dir, void 
 }
 
 void ports_register(void) {
-  cfg_register_directive("port", cfg_parse_port);
+  struct cfg_ns *ns = cfg_ns_get("ports");
+  cfg_register_directive(ns, "port", cfg_parse_port);
 }

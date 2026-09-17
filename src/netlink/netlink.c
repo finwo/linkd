@@ -28,6 +28,7 @@
 
 #include "filter.h"
 #include "netlink.h"
+#include "../ipc.h"
 
 #define NL_BUFSZ (64 * 1024)
 #define NL_MAX_NH 16
@@ -606,10 +607,20 @@ int nl_run(int fd, int resync_interval_s) {
   clock_gettime(CLOCK_MONOTONIC, &last_resync);
 
   while (!nl_stop) {
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    struct pollfd pfds[2];
+    int nfds = 1;
     struct timespec now;
     long wait_ms = 30000;
     int pr;
+
+    pfds[0].fd = fd;
+    pfds[0].events = POLLIN;
+    int ipcfd = ipc_fd();
+    if (ipcfd >= 0) {
+      pfds[1].fd = ipcfd;
+      pfds[1].events = POLLIN;
+      nfds = 2;
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (resync_interval_s > 0) {
@@ -627,13 +638,18 @@ int nl_run(int fd, int resync_interval_s) {
       if (remain < wait_ms) wait_ms = remain;
     }
 
-    pr = poll(&pfd, 1, (int)wait_ms);
+    pr = poll(pfds, nfds, (int)wait_ms);
     if (pr < 0) {
       if (errno == EINTR) continue;
       log_error("netlink: poll failed: %s", strerror(errno));
       return -1;
     }
     if (!pr) continue;
+
+    if (nfds > 1 && (pfds[1].revents & POLLIN)) {
+      ipc_handle();
+    }
+    if (!(pfds[0].revents & POLLIN)) continue;
 
     for (;;) {
       struct nlmsghdr *h;
