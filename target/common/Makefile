@@ -4,8 +4,8 @@ BIN=unosd
 
 SRC:=
 SRC+=$(wildcard src/*.c)
-SRC+=$(filter-out src/cli/%,$(wildcard src/*/*.c))
-SRC+=$(filter-out src/cli/%,$(wildcard src/*/*/*.c))
+SRC+=$(wildcard src/*/*.c)
+SRC+=$(wildcard src/*/*/*.c)
 
 CFLAGS?=-Wall -Wextra -O2
 LDFLAGS?=

@@ -60,6 +60,8 @@ void ifaces_free(void) {
     free(cur->post_up);
     free(cur->pre_down);
     free(cur->post_down);
+    free(cur->bridge_ports);
+    free(cur->bridge_stp);
     for (a = cur->addrs; a; a = anext) {
       anext = a->next;
       free(a->address);
@@ -314,6 +316,29 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       }
       free(iface->pre_down);
       iface->pre_down = cmd;
+    }
+    else if (!strcasecmp("bridge-ports", dir->name) || !strcasecmp("bridge_ports", dir->name)) {
+      if (dir->argc < 1) { fprintf(stderr, "`bridge-ports` expects at least 1 arg\n"); exit(1); }
+      size_t len = 0;
+      for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
+      char *cmd = calloc(1, len+1);
+      for (int i=0;i<(int)dir->argc;i++) {
+        strcat(cmd, dir->argv[i]);
+        if (i+1 < (int)dir->argc) strcat(cmd, " ");
+      }
+      free(iface->bridge_ports);
+      iface->bridge_ports = cmd;
+    }
+    else if (!strcasecmp("bridge-stp", dir->name) || !strcasecmp("bridge_stp", dir->name)) {
+      if (dir->argc != 1) { fprintf(stderr, "`bridge-stp` expects 1 arg (on/off)\n"); exit(1); }
+      free(iface->bridge_stp);
+      iface->bridge_stp = strdup(dir->argv[0]);
+    }
+    else if (!strcasecmp("bridge-vlan-aware", dir->name) || !strcasecmp("bridge_vlan_aware", dir->name)) {
+      if (dir->argc != 1) { fprintf(stderr, "`bridge-vlan-aware` expects 1 arg (yes/no)\n"); exit(1); }
+      if (!strcasecmp(dir->argv[0], "yes") || !strcasecmp(dir->argv[0], "on") || !strcasecmp(dir->argv[0], "1")) iface->bridge_vlan_aware = 1;
+      else if (!strcasecmp(dir->argv[0], "no") || !strcasecmp(dir->argv[0], "off") || !strcasecmp(dir->argv[0], "0")) iface->bridge_vlan_aware = 0;
+      else { fprintf(stderr, "`bridge-vlan-aware` expects yes/no\n"); exit(1); }
     }
     else {
       break;

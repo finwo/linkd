@@ -30,6 +30,9 @@ struct unos_iface {
   char               *post_up;
   char               *pre_down;
   char               *post_down;
+  char               *bridge_ports; // space-separated, e.g. "swp1 swp2"
+  char               *bridge_stp; // "on"/"off"
+  int                 bridge_vlan_aware; // -1 unset, 0 no, 1 yes
   int                 auto_flag; // 1 if listed in auto
   struct unos_iface  *next;
 };

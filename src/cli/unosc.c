@@ -8,33 +8,23 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "registry.h"
+
 #define UNOS_IPC_PATH "/run/unosd.sock"
 
-int main(int argc, char *argv[]) {
-  const char *prog = basename(argv[0]);
-  const char *cmd = NULL;
-  int cmd_argc = 0;
-  char **cmd_argv = NULL;
+int main_unosc(int argc, char *argv[]) {
+  // unosc is a tiny shim: unosc <cmd> [args...] -> send "cmd [args...]\n" to /run/unosd.sock
+  // It does NOT handle being called as ifup via argv[0]; those have their own mains.
+  if (argc < 2) {
+    fprintf(stderr, "usage: %s <ifup|ifdown|ifquery|ifreload> [args...]\n", argv[0]);
+    return 1;
+  }
+  const char *cmd = argv[1];
+  int cmd_argc = argc - 2;
+  char **cmd_argv = argv + 2;
   int sock;
   struct sockaddr_un addr;
   char buf[4096];
-
-  // Determine command from argv[0] or argv[1]
-  if (!strcmp(prog, "unosc")) {
-    if (argc < 2) {
-      fprintf(stderr, "usage: %s <ifup|ifdown|ifquery|ifreload> [args...]\n", prog);
-      fprintf(stderr, "   or: ifup/ifdown/ifquery/ifreload as symlinks to unosc\n");
-      return 1;
-    }
-    cmd = argv[1];
-    cmd_argc = argc - 2;
-    cmd_argv = argv + 2;
-  } else {
-    // Called as ifup, ifdown, etc. via symlink
-    cmd = prog;
-    cmd_argc = argc - 1;
-    cmd_argv = argv + 1;
-  }
 
   sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) {
@@ -67,6 +57,9 @@ int main(int argc, char *argv[]) {
       close(sock);
       return 1;
     }
+    // Half-close: signals EOF to unosd so it stops reading and replies. Without
+    // this the server blocks waiting for a second command until its timeout.
+    shutdown(sock, SHUT_WR);
   }
 
   // Read response and pipe to stdout
@@ -94,4 +87,9 @@ int main(int argc, char *argv[]) {
   // If we saw ERR, exit 1
   if (saw_err) return 1;
   return 0;
+}
+
+__attribute__((constructor))
+static void register_unosc(void) {
+  cli_register("unosc", main_unosc);
 }

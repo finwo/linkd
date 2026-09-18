@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <net/if.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +15,10 @@
 
 #include "util/config.h"
 #include "config/ifaces.h"
+#include "config/ports.h"
 #include "ipc.h"
 #include "netlink/netlink.h"
+#include "netlink/rtnl.h"
 
 static int ipc_sock = -1;
 
@@ -173,7 +176,6 @@ static struct cnf_directive *cfg_handle_ifquery(FILE *fd, struct cnf_directive *
 uid_t ipc_current_uid = 0;
 
 int ipc_handle(void) {
-  log_info("ipc: handle called");
   int cfd;
   struct sockaddr_un addr;
   socklen_t alen = sizeof(addr);
@@ -183,11 +185,27 @@ int ipc_handle(void) {
   FILE *fout = NULL;
   int fd_dup;
 
-  cfd = accept4(ipc_sock, (struct sockaddr*)&addr, &alen, SOCK_CLOEXEC | SOCK_NONBLOCK);
+  // The LISTENING socket is non-blocking (it lives in the nl_run poll set), but
+  // the ACCEPTED connection must be blocking: the client connects and writes its
+  // command as two separate syscalls, so a non-blocking read here returns EAGAIN
+  // whenever the bytes have not landed yet. stdio maps that to EOF, cfg_parse
+  // sees an empty stream, no handler runs and the client gets an empty reply.
+  // That is a race with no upper bound in wall-clock terms - it is not fixable
+  // by sleeping in the caller, only by blocking here.
+  cfd = accept4(ipc_sock, (struct sockaddr*)&addr, &alen, SOCK_CLOEXEC);
   if (cfd < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
     log_error("ipc: accept failed: %s", strerror(errno));
     return -1;
+  }
+
+  // Blocking, but never indefinitely: unosd is single-threaded, so a client that
+  // connects and then stalls would otherwise wedge the whole daemon (netlink
+  // included). A short timeout bounds that without reintroducing the race.
+  {
+    struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   }
 
   // Get peer credentials
@@ -263,10 +281,7 @@ static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
   struct unos_iface *iface = ifaces_find(ifname);
   if (!iface) {
     log_info("ipc: ifup %s (not in interfaces, just bringing link up)", ifname);
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "ip link set %s up 2>&1", ifname);
-    int rc = system(cmd);
-    if (rc != 0) {
+    if (rtnl_link_up(ifname) != 0) {
       fprintf(out, "ERR ifup %s failed\n", ifname);
       return -1;
     }
@@ -277,42 +292,79 @@ static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
     fprintf(out, "ERR pre-up hook failed for %s\n", ifname);
     return -1;
   }
-  // VLAN handling: if iface is vlan, ensure raw device exists and create vlan link
-  // For now, just bring link up and add addresses via netlink helpers (to be implemented)
-  // Placeholder: use system ip commands via netlink abstraction
-  // TODO: wire real netlink RTM_NEWLINK/NEWADDR
-  char cmd[512];
-  int rc;
+  // VLAN creation first (needs rawdev)
+  if (iface->vlan_id >= 0) {
+    const char *raw = iface->vlan_raw_device;
+    char tmp[IF_NAMESIZE];
+    if (!raw) {
+      char *dot = strrchr(iface->name, '.');
+      if (dot) {
+        size_t len = dot - iface->name;
+        if (len < sizeof(tmp)) {
+          memcpy(tmp, iface->name, len);
+          tmp[len] = '\0';
+          raw = tmp;
+        }
+      }
+    }
+    if (raw) {
+      log_info("ipc: ifup %s vlan %d on %s", ifname, iface->vlan_id, raw);
+      rtnl_vlan_create(ifname, raw, iface->vlan_id);
+    }
+  }
+  // Bridge creation -- explicit bridge-ports (including "none") or br* without vlan
+  bool is_bridge = false;
+  if (iface->bridge_ports) is_bridge = true;
+  else if (iface->bridge_stp || iface->bridge_vlan_aware >= 0) is_bridge = true;
+  else if (!strncmp(iface->name, "br", 2) && iface->vlan_id < 0) is_bridge = true;
+  if (is_bridge) {
+    log_info("ipc: ifup %s bridge (ports %s)", ifname, iface->bridge_ports ? iface->bridge_ports : "(none)");
+    rtnl_bridge_create(ifname);
+    if (iface->bridge_stp) {
+      bool on = !strcasecmp(iface->bridge_stp, "on") || !strcasecmp(iface->bridge_stp, "yes");
+      rtnl_bridge_set_stp(ifname, on);
+    }
+    if (iface->bridge_vlan_aware >= 0) {
+      rtnl_bridge_set_vlan_aware(ifname, iface->bridge_vlan_aware);
+    }
+    if (iface->bridge_ports && strcasecmp(iface->bridge_ports, "none") != 0) {
+      char *ports = strdup(iface->bridge_ports);
+      char *tok = strtok(ports, " \t");
+      while (tok) {
+        if (strcasecmp(tok, "none") == 0) { tok = strtok(NULL, " \t"); continue; }
+        log_info("ipc: ifup %s bridge add port %s", ifname, tok);
+        rtnl_bridge_add_port(ifname, tok);
+        rtnl_link_up(tok);
+        tok = strtok(NULL, " \t");
+      }
+      free(ports);
+    }
+  }
   // Bring link up
-  snprintf(cmd, sizeof(cmd), "/sbin/ip link set %s up", ifname);
-  rc = system(cmd);
-  log_info("ipc: ifup %s link up rc=%d cmd='%s'", ifname, rc, cmd);
-  if (rc != 0) { fprintf(out, "ERR ifup %s: link up failed (%d)\n", ifname, rc); return -1; }
-  // Add addresses
-  struct iface_addr *a;
-  for (a = iface->addrs; a; a = a->next) {
-    snprintf(cmd, sizeof(cmd), "/sbin/ip addr add %s dev %s 2>&1", a->address, ifname);
-    rc = system(cmd);
-    log_info("ipc: ifup %s addr %s rc=%d", ifname, a->address, rc);
-    // File exists is not fatal (addr already present)
-    if (rc != 0 && rc != 256) { /* 256 = File exists from ip */ }
+  if (rtnl_link_up(ifname) != 0) {
+    fprintf(out, "ERR ifup %s: link up failed\n", ifname);
+    return -1;
+  }
+  // Addresses
+  for (struct iface_addr *a = iface->addrs; a; a = a->next) {
+    log_info("ipc: ifup %s addr %s", ifname, a->address);
+    rtnl_addr_add(ifname, a->address, a->netmask);
   }
   if (iface->gateway) {
-    snprintf(cmd, sizeof(cmd), "/sbin/ip route add default via %s 2>&1 || true", iface->gateway);
-    rc = system(cmd);
-    log_info("ipc: ifup %s gateway %s rc=%d", ifname, iface->gateway, rc);
+    log_info("ipc: ifup %s gateway %s", ifname, iface->gateway);
+    rtnl_route_add_default(iface->gateway, ifname);
   }
   if (iface->mtu) {
-    snprintf(cmd, sizeof(cmd), "/sbin/ip link set %s mtu %d", ifname, iface->mtu);
-    rc = system(cmd);
-    log_info("ipc: ifup %s mtu %d rc=%d", ifname, iface->mtu, rc);
-    if (rc != 0) { fprintf(out, "ERR ifup %s: mtu failed\n", ifname); return -1; }
+    if (rtnl_link_set_mtu(ifname, iface->mtu) != 0) {
+      fprintf(out, "ERR ifup %s: mtu failed\n", ifname);
+      return -1;
+    }
   }
   if (iface->hwaddress) {
-    snprintf(cmd, sizeof(cmd), "/sbin/ip link set %s address %s", ifname, iface->hwaddress);
-    rc = system(cmd);
-    log_info("ipc: ifup %s hwaddress %s rc=%d", ifname, iface->hwaddress, rc);
-    if (rc != 0) { fprintf(out, "ERR ifup %s: hwaddress failed\n", ifname); return -1; }
+    if (rtnl_link_set_hwaddr(ifname, iface->hwaddress) != 0) {
+      fprintf(out, "ERR ifup %s: hwaddress failed\n", ifname);
+      return -1;
+    }
   }
   if (iface->post_up && run_hook(iface->post_up) != 0) {
     fprintf(out, "ERR post-up hook failed for %s\n", ifname);
@@ -326,10 +378,7 @@ static int handle_ifdown(FILE *out, const char *ifname, uid_t uid) {
   struct unos_iface *iface = ifaces_find(ifname);
   if (!iface) {
     log_info("ipc: ifdown %s (not in interfaces, just bringing link down)", ifname);
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "ip link set %s down 2>&1", ifname);
-    int rc = system(cmd);
-    if (rc != 0) {
+    if (rtnl_link_down(ifname) != 0) {
       fprintf(out, "ERR ifdown %s failed\n", ifname);
       return -1;
     }
@@ -340,12 +389,10 @@ static int handle_ifdown(FILE *out, const char *ifname, uid_t uid) {
     fprintf(out, "ERR pre-down hook failed for %s\n", ifname);
     return -1;
   }
-  char cmd[512];
-  int rc2;
-  snprintf(cmd, sizeof(cmd), "/sbin/ip link set %s down", ifname);
-  rc2 = system(cmd);
-  log_info("ipc: ifdown %s rc=%d", ifname, rc2);
-  if (rc2 != 0) { fprintf(out, "ERR ifdown %s failed (%d)\n", ifname, rc2); return -1; }
+  if (rtnl_link_down(ifname) != 0) {
+    fprintf(out, "ERR ifdown %s failed\n", ifname);
+    return -1;
+  }
   // Flush addresses (keep for now)
   if (iface->post_down && run_hook(iface->post_down) != 0) {
     fprintf(out, "ERR post-down hook failed for %s\n", ifname);
@@ -356,12 +403,18 @@ static int handle_ifdown(FILE *out, const char *ifname, uid_t uid) {
 
 static int handle_ifreload(FILE *out, uid_t uid) {
   (void)uid;
-  log_info("ipc: ifreload (diff-apply)");
+  log_info("ipc: ifreload (diff-apply) start, old list has %d", ({
+    int n=0; for (struct unos_iface *c=ifaces_list();c;c=c->next) n++; n;
+  }));
   // For now, just re-parse and apply all auto interfaces
   // TODO: implement diff-apply: compare old vs new lists
   // Placeholder: reload config files
-  // We need to free old and re-parse
+  // We need to free old and re-parse (both ifaces and ports)
   ifaces_free();
+  ports_free();
+  log_info("ipc: ifreload after free, list has %d", ({
+    int n=0; for (struct unos_iface *c=ifaces_list();c;c=c->next) n++; n;
+  }));
   // Re-register is idempotent, but we need to reload
   // Use same logic as main.c load_interfaces
   char *dir = "/etc/network";
@@ -397,6 +450,14 @@ static int handle_ifreload(FILE *out, uid_t uid) {
     if (fd) {
       cfg_parse(cfg_ns_get("ports"), dir, fd, NULL);
       fclose(fd);
+    }
+  }
+  {
+    int n = 0;
+    for (struct unos_iface *c = ifaces_list(); c; c = c->next) n++;
+    log_info("ipc: ifreload done, new list has %d", n);
+    for (struct unos_iface *c = ifaces_list(); c; c = c->next) {
+      log_info("ipc: ifreload iface %s", c->name);
     }
   }
   return 0;
