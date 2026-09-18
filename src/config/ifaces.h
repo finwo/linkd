@@ -1,6 +1,7 @@
 #ifndef __UNOS_CONFIG_IFACES_H__
 #define __UNOS_CONFIG_IFACES_H__
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -33,9 +34,23 @@ struct unos_iface {
   char               *bridge_ports; // space-separated, e.g. "swp1 swp2"
   char               *bridge_stp; // "on"/"off"
   int                 bridge_vlan_aware; // -1 unset, 0 no, 1 yes
+  // VRF. Two distinct roles, deliberately separate fields:
+  //   vrf_table >= 0  -> THIS interface is a VRF device with that table id
+  //                      (`vrf-table <id|auto>`)
+  //   vrf_master      -> this interface is a MEMBER of the named VRF
+  //                      (`vrf <name>`)
+  // Both appear in every production Cumulus config we captured; a mgmt VRF is
+  // how management traffic is kept out of the table BGP populates.
+  int                 vrf_table;  // -1 unset, otherwise 1..2^31-1
+  char               *vrf_master; // NULL unset
   int                 auto_flag; // 1 if listed in auto
   struct unos_iface  *next;
 };
+
+// Shared classification. Previously duplicated in cli/unosd.c and ipc.c, which
+// let the two drift; keep exactly one definition.
+bool iface_is_bridge(const struct unos_iface *ifc);
+bool iface_is_vrf(const struct unos_iface *ifc);
 
 void ifaces_register(void);
 

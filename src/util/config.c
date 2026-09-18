@@ -51,7 +51,39 @@ void cfg_register_directive(struct cfg_ns *ns, const char *name, cfg_directive_f
   ns->count++;
 }
 
-// source-directory handler: transforms `source-directory <dir>` into `source <dir>/*`
+// Internal directive name used to mark a glob that came from
+// `source-directory` and must therefore obey run-parts filename rules. Not
+// reachable from a config file: `@` is not a legal directive name character.
+#define CFG_SOURCE_DIR_MARKER "@source-directory"
+
+// run-parts naming, as interfaces(5) specifies for source-directory: a file is
+// sourced only if its name consists entirely of ASCII letters, digits,
+// underscores and hyphens.
+//
+// This is not pedantry. The rule exists to skip editor backups, dpkg-dist
+// files and anything else with a dot or tilde in it. The production Cumulus
+// switch we captured has seven such files sitting in /etc/network/interfaces.d
+// (030-swp.intf.10469.2026-09-08@09:32:31~ and friends); without this filter
+// we would source stale duplicate config and die on a duplicate `iface`.
+//
+// Note this necessarily excludes `foo.cnf` too -- which is why our own shipped
+// configs use an explicit `source <dir>/*.cnf` glob rather than
+// source-directory. Explicit globs are not filtered.
+static int name_is_runparts(const char *name) {
+  const char *p;
+  if (!name || !*name) return 0;
+  for (p = name; *p; p++) {
+    if (*p >= 'a' && *p <= 'z') continue;
+    if (*p >= 'A' && *p <= 'Z') continue;
+    if (*p >= '0' && *p <= '9') continue;
+    if (*p == '_' || *p == '-') continue;
+    return 0;
+  }
+  return 1;
+}
+
+// source-directory handler: transforms `source-directory <dir>` into a
+// run-parts-filtered glob of <dir>/*
 static struct cnf_directive *cfg_handle_source_directory(FILE *fd, struct cnf_directive *dir, void *user) {
   (void)fd; (void)user;
   struct cnf_directive *ndir = NULL;
@@ -70,7 +102,7 @@ static struct cnf_directive *cfg_handle_source_directory(FILE *fd, struct cnf_di
   // Synthesize a `source <dir>/*` directive
   // Allocate new directive manually
   ndir = calloc(1, sizeof(*ndir));
-  ndir->name = strdup("source");
+  ndir->name = strdup(CFG_SOURCE_DIR_MARKER);
   ndir->argc = 1;
   ndir->argv = calloc(1, sizeof(char*));
   // Append /* if not already ending with /*
@@ -110,7 +142,10 @@ int cfg_parse(struct cfg_ns *ns, const char *wd, FILE *fd, void *user) {
   cfg_parse_reparse:
 
     // Core handlers: source and source-directory (source-directory is via handler table, but we also handle source here as built-in)
-    if (!strcasecmp("source", dir->name)) {
+    if (!strcasecmp("source", dir->name) || !strcasecmp(CFG_SOURCE_DIR_MARKER, dir->name)) {
+      // Only source-directory filters filenames; an explicit `source foo/*.cnf`
+      // means exactly what it says.
+      int runparts = !strcasecmp(CFG_SOURCE_DIR_MARKER, dir->name);
       globflags = GLOB_ERR;
       for ( i = 0 ; i < (int)dir->argc ; i++ ) {
         if (dir->argv[i][0] == '/') {
@@ -131,6 +166,16 @@ int cfg_parse(struct cfg_ns *ns, const char *wd, FILE *fd, void *user) {
         globflags = GLOB_ERR | GLOB_APPEND;
       }
       for ( i = 0 ; i < (int)globbuf.gl_pathc ; i++ ) {
+        if (runparts) {
+          char *bcopy = strdup(globbuf.gl_pathv[i]);
+          const char *base = basename(bcopy);
+          int ok = name_is_runparts(base);
+          if (!ok) {
+            fprintf(stderr, "config: source-directory: skipping `%s` (not run-parts safe)\n", base);
+          }
+          free(bcopy);
+          if (!ok) continue;
+        }
         strtmp = calloc(strlen(globbuf.gl_pathv[i])+1, 1);
         strcpy(strtmp, globbuf.gl_pathv[i]);
         char *dname = strdup(strtmp);

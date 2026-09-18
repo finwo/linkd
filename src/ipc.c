@@ -312,12 +312,15 @@ static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
       rtnl_vlan_create(ifname, raw, iface->vlan_id);
     }
   }
-  // Bridge creation -- explicit bridge-ports (including "none") or br* without vlan
-  bool is_bridge = false;
-  if (iface->bridge_ports) is_bridge = true;
-  else if (iface->bridge_stp || iface->bridge_vlan_aware >= 0) is_bridge = true;
-  else if (!strncmp(iface->name, "br", 2) && iface->vlan_id < 0) is_bridge = true;
-  if (is_bridge) {
+  // VRF device: create before anything else touches it. `ifup <vrf>` on its
+  // own must work, not only a full apply.
+  if (iface_is_vrf(iface)) {
+    log_info("ipc: ifup %s vrf table %d", ifname, iface->vrf_table);
+    rtnl_vrf_create(ifname, (uint32_t)iface->vrf_table);
+  }
+  // Bridge creation -- classification shared with apply_interfaces, see
+  // config/ifaces.c:iface_is_bridge().
+  if (iface_is_bridge(iface)) {
     log_info("ipc: ifup %s bridge (ports %s)", ifname, iface->bridge_ports ? iface->bridge_ports : "(none)");
     rtnl_bridge_create(ifname);
     if (iface->bridge_stp) {
@@ -341,6 +344,12 @@ static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
     }
   }
   // Bring link up
+  // Enslave before the link comes up and addresses land: moving an interface
+  // into a VRF flushes its addresses, so doing it afterwards would silently
+  // discard what we just configured.
+  if (iface->vrf_master) {
+    rtnl_vrf_add_port(iface->vrf_master, ifname);
+  }
   if (rtnl_link_up(ifname) != 0) {
     fprintf(out, "ERR ifup %s: link up failed\n", ifname);
     return -1;
@@ -486,6 +495,12 @@ static int handle_ifquery(FILE *out, const char *ifname) {
     if (cur->hwaddress) fprintf(out, "  hwaddress %s\n", cur->hwaddress);
     if (cur->vlan_raw_device) fprintf(out, "  vlan-raw-device %s\n", cur->vlan_raw_device);
     if (cur->vlan_id >= 0) fprintf(out, "  vlan-id %d\n", cur->vlan_id);
+    if (cur->bridge_ports) fprintf(out, "  bridge-ports %s\n", cur->bridge_ports);
+    if (cur->bridge_stp) fprintf(out, "  bridge-stp %s\n", cur->bridge_stp);
+    if (cur->bridge_vlan_aware >= 0)
+      fprintf(out, "  bridge-vlan-aware %s\n", cur->bridge_vlan_aware ? "yes" : "no");
+    if (cur->vrf_table >= 0) fprintf(out, "  vrf-table %d\n", cur->vrf_table);
+    if (cur->vrf_master) fprintf(out, "  vrf %s\n", cur->vrf_master);
     if (cur->pre_up) fprintf(out, "  pre-up %s\n", cur->pre_up);
     if (cur->post_up) fprintf(out, "  post-up %s\n", cur->post_up);
     if (cur->pre_down) fprintf(out, "  pre-down %s\n", cur->pre_down);

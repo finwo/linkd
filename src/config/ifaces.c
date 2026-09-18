@@ -12,6 +12,74 @@
 static struct unos_iface *ifaces = NULL;
 static struct unos_iface *ifaces_tail = NULL;
 
+// Allocate an iface with every "unset" field at its sentinel.
+//
+// calloc() zeroes, which is the correct "unset" for pointers and for counters
+// like mtu, but WRONG for any field whose valid range includes 0. Those use -1
+// as the sentinel and must be set explicitly.
+//
+// This exists because bridge_vlan_aware was documented as "-1 unset" but never
+// initialised, so it sat at 0 and the `bridge_vlan_aware >= 0` test classified
+// EVERY interface as a bridge. It was masked only because creating a bridge on
+// an existing device fails harmlessly. Centralising the sentinels here means a
+// new tri-state field cannot repeat that by being forgotten at one of the two
+// allocation sites.
+static struct unos_iface * iface_new(const char *name) {
+  struct unos_iface *ifc = calloc(1, sizeof(*ifc));
+  if (!ifc) return NULL;
+  ifc->name              = name ? strdup(name) : NULL;
+  ifc->vlan_id           = -1;
+  ifc->bridge_vlan_aware = -1;
+  ifc->vrf_table         = -1;
+  return ifc;
+}
+
+// Is this interface a bridge?
+//
+// Single source of truth: this was duplicated in cli/unosd.c and ipc.c, which
+// is how the two could drift. Explicit bridge-* directives win; the name
+// prefix is only a fallback, and never applies to something already declared
+// a VLAN or enslaved to a VRF.
+bool iface_is_bridge(const struct unos_iface *ifc) {
+  if (!ifc) return false;
+  if (ifc->bridge_ports) return true;
+  if (ifc->bridge_stp) return true;
+  if (ifc->bridge_vlan_aware >= 0) return true;
+  if (ifc->vlan_id >= 0) return false;
+  if (ifc->vrf_table >= 0) return false;
+  return !strncmp(ifc->name, "br", 2);
+}
+
+// Is this interface a VRF? `vrf-table` makes it one; `vrf <name>` makes it a
+// MEMBER of one, which is a different thing entirely.
+bool iface_is_vrf(const struct unos_iface *ifc) {
+  return ifc && ifc->vrf_table >= 0;
+}
+
+// `vrf-table auto`: lowest free id at or above VRF_TABLE_AUTO_BASE.
+//
+// 1001 is not arbitrary -- it is where Cumulus starts, and the S5248F-ON we
+// captured has its `mgmt` VRF on exactly table 1001 (PROGRESS.md 2.1). Matching
+// that means a config moved off a Cumulus box lands on the same tables.
+// Deliberately skips 253/254/255 by construction, and skips any id already
+// claimed explicitly, so `auto` and a hardcoded id cannot collide.
+#define VRF_TABLE_AUTO_BASE 1001
+static int vrf_table_auto(const char *name) {
+  struct unos_iface *cur;
+  int candidate;
+  for (candidate = VRF_TABLE_AUTO_BASE; candidate < 2147483647; candidate++) {
+    int taken = 0;
+    for (cur = ifaces; cur; cur = cur->next) {
+      // An interface re-parsing its own stanza must keep its table.
+      if (name && cur->name && !strcmp(cur->name, name)) continue;
+      if (cur->vrf_table == candidate) { taken = 1; break; }
+    }
+    if (!taken) return candidate;
+  }
+  fprintf(stderr, "vrf-table auto: no free table id\n");
+  exit(1);
+}
+
 struct unos_iface * ifaces_list(void) {
   return ifaces;
 }
@@ -31,9 +99,7 @@ void ifaces_set_auto(const char *name, int flag) {
     return;
   }
   // Create placeholder for auto without iface block yet (common in Debian: auto comes before iface)
-  cur = calloc(1, sizeof(*cur));
-  cur->name = strdup(name);
-  cur->vlan_id = -1;
+  cur = iface_new(name);
   cur->auto_flag = flag;
   if (ifaces_tail) {
     ifaces_tail->next = cur;
@@ -62,6 +128,7 @@ void ifaces_free(void) {
     free(cur->post_down);
     free(cur->bridge_ports);
     free(cur->bridge_stp);
+    free(cur->vrf_master);
     for (a = cur->addrs; a; a = anext) {
       anext = a->next;
       free(a->address);
@@ -156,11 +223,9 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     // keep auto_flag
   } else {
     // create new
-    iface = calloc(1, sizeof(*iface));
-    iface->name = strdup(name);
+    iface = iface_new(name);
     iface->method = method ? strdup(method) : NULL;
     iface->family = family ? strdup(family) : NULL;
-    iface->vlan_id = -1;
     // check if auto was previously set for this name via placeholder? Already handled, but if not placeholder, check if any placeholder had auto
     // Actually ifaces_set_auto may have created placeholder with auto, we already handled.
     // If no placeholder, auto_flag stays 0 until auto directive is parsed (order may be auto before or after iface)
@@ -339,6 +404,33 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       if (!strcasecmp(dir->argv[0], "yes") || !strcasecmp(dir->argv[0], "on") || !strcasecmp(dir->argv[0], "1")) iface->bridge_vlan_aware = 1;
       else if (!strcasecmp(dir->argv[0], "no") || !strcasecmp(dir->argv[0], "off") || !strcasecmp(dir->argv[0], "0")) iface->bridge_vlan_aware = 0;
       else { fprintf(stderr, "`bridge-vlan-aware` expects yes/no\n"); exit(1); }
+    }
+    // `vrf <name>`: enslave this interface to an existing VRF device.
+    else if (!strcasecmp("vrf", dir->name)) {
+      if (dir->argc != 1) { fprintf(stderr, "`vrf` expects 1 arg (vrf device name)\n"); exit(1); }
+      free(iface->vrf_master);
+      iface->vrf_master = strdup(dir->argv[0]);
+    }
+    // `vrf-table <id|auto>`: THIS interface is a VRF device with that table.
+    // Cumulus spells the automatic case `auto`; we allocate from a private
+    // range rather than colliding with main(254)/local(255)/default(253).
+    else if (!strcasecmp("vrf-table", dir->name) || !strcasecmp("vrf_table", dir->name)) {
+      if (dir->argc != 1) { fprintf(stderr, "`vrf-table` expects 1 arg (table id or `auto`)\n"); exit(1); }
+      if (!strcasecmp(dir->argv[0], "auto")) {
+        iface->vrf_table = vrf_table_auto(iface->name);
+      } else {
+        char *end = NULL;
+        long v = strtol(dir->argv[0], &end, 10);
+        if (!end || *end || v <= 0 || v > 2147483647L) {
+          fprintf(stderr, "`vrf-table` expects a positive table id or `auto`, got `%s`\n", dir->argv[0]);
+          exit(1);
+        }
+        if (v == 253 || v == 254 || v == 255) {
+          fprintf(stderr, "`vrf-table` %ld is a reserved table (default/main/local)\n", v);
+          exit(1);
+        }
+        iface->vrf_table = (int)v;
+      }
     }
     else {
       break;

@@ -406,6 +406,62 @@ int rtnl_bridge_create(const char *name) {
   return rtnl_talk(nh);
 }
 
+// Create a VRF device bound to a routing table.
+//
+// A VRF is an L3 master device: enslaved interfaces have their routes looked
+// up in IFLA_VRF_TABLE instead of main. The table id is not decoration -- it
+// IS the separation, which is why it is mandatory here rather than defaulted.
+// Requires CONFIG_NET_VRF (shipped as a module, see the kernel templates).
+int rtnl_vrf_create(const char *name, uint32_t table) {
+  if (!name || !table) return -1;
+  if (if_nametoindex(name) != 0) {
+    log_info("rtnl: vrf %s already exists", name);
+    return 0;
+  }
+  char buf[NL_BUFSZ];
+  struct nlmsghdr *nh = (struct nlmsghdr*)buf;
+  struct ifinfomsg *ifi;
+  memset(buf, 0, sizeof(buf));
+  nh->nlmsg_len = NLMSG_LENGTH(sizeof(*ifi));
+  nh->nlmsg_type = RTM_NEWLINK;
+  nh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+  ifi = NLMSG_DATA(nh);
+  ifi->ifi_family = AF_UNSPEC;
+  addattr_l(nh, sizeof(buf), IFLA_IFNAME, name, strlen(name)+1);
+  int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "vrf", 4);
+  int nest2 = addattr_nested_start(nh, sizeof(buf), IFLA_INFO_DATA);
+  addattr_l(nh, sizeof(buf), IFLA_VRF_TABLE, &table, sizeof(table));
+  addattr_nested_end(nh, nest2);
+  addattr_nested_end(nh, nest);
+  log_info("rtnl: vrf %s table %u", name, table);
+  return rtnl_talk(nh);
+}
+
+// Enslave an interface to a VRF. Same IFLA_MASTER mechanism as bridge
+// enslavement -- the kernel distinguishes them by the master's kind.
+int rtnl_vrf_add_port(const char *vrf, const char *port) {
+  unsigned vidx = if_nametoindex(vrf);
+  unsigned pidx = if_nametoindex(port);
+  if (!vidx || !pidx) {
+    log_error("rtnl: vrf_add_port %s -> %s: ifindex not found (%u, %u)", port, vrf, pidx, vidx);
+    return -1;
+  }
+  char buf[NL_BUFSZ];
+  struct nlmsghdr *nh = (struct nlmsghdr*)buf;
+  struct ifinfomsg *ifi;
+  memset(buf, 0, sizeof(buf));
+  nh->nlmsg_len = NLMSG_LENGTH(sizeof(*ifi));
+  nh->nlmsg_type = RTM_NEWLINK;
+  nh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+  ifi = NLMSG_DATA(nh);
+  ifi->ifi_family = AF_UNSPEC;
+  ifi->ifi_index = pidx;
+  addattr_l(nh, sizeof(buf), IFLA_MASTER, &vidx, sizeof(vidx));
+  log_info("rtnl: vrf %s enslave %s", vrf, port);
+  return rtnl_talk(nh);
+}
+
 int rtnl_bridge_set_stp(const char *name, bool on) {
   unsigned ifindex = if_nametoindex(name);
   if (!ifindex) return -1;

@@ -156,8 +156,27 @@ static int apply_ports(void) {
   return 0;
 }
 
+// Applies the already-parsed in-memory config (ifaces_list()); nothing here
+// reads the filesystem. Two ordered phases, because interfaces depend on each
+// other: a member cannot join a VRF that does not exist yet, and members are
+// routinely declared first -- the production Cumulus config we captured has
+// `iface eth0` carrying `vrf mgmt` above the `iface mgmt` stanza that defines
+// it. Bridges need no such phase: membership is declared on the bridge
+// (`bridge-ports`), not on the member.
 static int apply_interfaces(void) {
   struct unos_iface *cur;
+
+  // Phase 1: bring every VRF device into existence.
+  for (cur = ifaces_list(); cur; cur = cur->next) {
+    if (!cur->auto_flag) continue;
+    if (!iface_is_vrf(cur)) continue;
+    log_info("apply_interfaces: vrf %s table %d", cur->name, cur->vrf_table);
+    rtnl_vrf_create(cur->name, (uint32_t)cur->vrf_table);
+    rtnl_link_up(cur->name);
+  }
+
+  // Phase 2: apply every interface, VRF devices included (create is
+  // idempotent -- rtnl_vrf_create returns early when the device exists).
   for (cur = ifaces_list(); cur; cur = cur->next) {
     if (!cur->auto_flag) continue;
     if (cur->pre_up) {
@@ -186,11 +205,7 @@ static int apply_interfaces(void) {
         rtnl_vlan_create(cur->name, raw, cur->vlan_id);
       }
     }
-    bool is_bridge = false;
-    if (cur->bridge_ports) is_bridge = true;
-    else if (cur->bridge_stp || cur->bridge_vlan_aware >= 0) is_bridge = true;
-    else if (!strncmp(cur->name, "br", 2) && cur->vlan_id < 0) is_bridge = true;
-    if (is_bridge) {
+    if (iface_is_bridge(cur)) {
       log_info("apply_interfaces: bridge %s ports %s", cur->name, cur->bridge_ports ? cur->bridge_ports : "(none)");
       rtnl_bridge_create(cur->name);
       if (cur->bridge_stp) {
@@ -209,6 +224,12 @@ static int apply_interfaces(void) {
         }
         free(ports);
       }
+    }
+    // Enslave to a VRF before bringing the link up and assigning addresses:
+    // moving an interface into a VRF flushes its addresses, so doing it after
+    // would silently discard everything we just configured.
+    if (cur->vrf_master) {
+      rtnl_vrf_add_port(cur->vrf_master, cur->name);
     }
     log_info("apply_interfaces: link up %s", cur->name);
     rtnl_link_up(cur->name);

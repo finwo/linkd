@@ -22,6 +22,12 @@ int rtnl_route_del_default(const char *gateway, const char *ifname);
 int rtnl_vlan_create(const char *name, const char *rawdev, int vlan_id);
 
 // Bridge: create br with stp/vlan_aware, and enslave ports (space-separated)
+// VRF: create an L3 master device bound to a routing table, and enslave
+// interfaces to it. `table` is mandatory -- it is what actually separates the
+// VRF's routes from main.
+int rtnl_vrf_create(const char *name, uint32_t table);
+int rtnl_vrf_add_port(const char *vrf, const char *port);
+
 int rtnl_bridge_create(const char *name);
 int rtnl_bridge_set_stp(const char *name, bool on);
 int rtnl_bridge_set_vlan_aware(const char *name, bool on);
