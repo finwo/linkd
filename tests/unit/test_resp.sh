@@ -10,17 +10,24 @@ echo "==> test_resp: RESP server"
 BUILD_DIR=$(ensure_built "${ROOT}")
 BIN="${BUILD_DIR}/linkd"
 
-command -v unshare >/dev/null 2>&1 || { echo "SKIP: unshare unavailable"; exit 0; }
-unshare -Urn true 2>/dev/null   || { echo "SKIP: user namespaces unavailable"; exit 0; }
-
 T=$(mktemp -d)
-trap 'rm -rf "${T}"' EXIT
+# Kill the daemon by pid on the way out. `kill %1` does not work here: job
+# control is off in a non-interactive shell, so a failed test used to leave
+# the daemon running and holding its port.
+cleanup() {
+  # `|| true` throughout: the daemon is normally already gone, and a failing
+  # kill under `set -e` would abort the trap and fail an otherwise green run.
+  if [ -f "${T}/daemon.pid" ]; then kill "$(cat "${T}/daemon.pid")" 2>/dev/null || true; fi
+  rm -rf "${T}" || true
+}
+trap cleanup EXIT
 mkdir -p "${T}/bin"
 
 for l in linkd linkctl ifup ifdown ifquery ifreload; do ln -sf "${BIN}" "${T}/bin/${l}"; done
 
+# No `auto`: the daemon applies nothing, so it needs no privileges and cannot
+# touch the host's network.
 cat > "${T}/interfaces" <<EOF
-auto lo
 iface lo
     address 127.0.0.1/8
     address ::1/128
@@ -32,7 +39,12 @@ authfile ${T}/linkd.passwd
 listen unix://${T}/linkd.sock
 listen tcp://127.0.0.1:16793
 EOF
-: > "${T}/linkd.passwd"
+
+# The suite may run as any uid, so it cannot rely on SO_PEERCRED granting
+# access; it authenticates explicitly instead.
+HASH=$(printf 'testpass\n' | "${T}/bin/linkctl" hash)
+printf 'tester:%s:full\n' "${HASH}" > "${T}/linkd.passwd"
+chmod 600 "${T}/linkd.passwd"
 
 # Request comes from stdin, not argv: shell quoting mangles CRLF escapes.
 cat > "${T}/raw.c" <<'EOF'
@@ -60,10 +72,13 @@ EOF
 cc -O2 -o "${T}/raw" "${T}/raw.c" 2>/dev/null || { echo "SKIP: no compiler for raw client"; exit 0; }
 
 OUT="${T}/out"
-timeout 60 unshare -Urn sh -c "
+timeout 60 sh -c "
   '${T}/bin/linkd' --config '${T}/linkd.cnf' --ready-file '${T}/ready' --resync-interval 0 >'${T}/daemon.log' 2>&1 &
+  DPID=\$!
+  echo \$DPID > '${T}/daemon.pid'
   for i in \$(seq 1 80); do [ -e '${T}/ready' ] && break; sleep 0.25; done
   export LINKD_CONFIG='${T}/linkd.cnf'
+  export LINKD_AUTH='tester:testpass'
 
   echo '--ping--';     '${T}/bin/linkctl' PING
   echo '--echo--';     '${T}/bin/linkctl' PING hello
@@ -71,7 +86,8 @@ timeout 60 unshare -Urn sh -c "
   echo '--unknown--';  '${T}/bin/linkctl' FROBNICATE 2>&1 || true
   echo '--missing--';  '${T}/bin/ifquery' nosuch 2>&1 || true
   echo '--arity--';    '${T}/bin/linkctl' IFUP 2>&1 || true
-  echo '--mutate--';   '${T}/bin/ifup' lo
+  echo '--mutate--';   '${T}/bin/ifup' lo 2>&1 || true
+  echo '--peercred--'; env -u LINKD_AUTH '${T}/bin/ifup' lo 2>&1 || true
 
   echo '--pipeline--'
   printf '*1\r\n\$4\r\nPING\r\n*2\r\n\$4\r\nPING\r\n\$3\r\ntwo\r\n*1\r\n\$4\r\nPING\r\n' \
@@ -88,7 +104,7 @@ timeout 60 unshare -Urn sh -c "
   printf '*2\r\n\$7\r\nIFQUERY\r\n\$2\r\nlo\r\n' | timeout 5 nc 127.0.0.1 16793 2>/dev/null | head -1
   echo '--end--'
 
-  kill %1 2>/dev/null
+  kill \$DPID 2>/dev/null; wait \$DPID 2>/dev/null
 " > "${OUT}" 2>&1 || true
 
 section() { sed -n "/^--$1--\$/,/^--/p" "${OUT}" | sed '1d;$d'; }
@@ -101,7 +117,28 @@ assert_contains "$(section query)"  "address ::1/128"     "IFQUERY returns IPv6 
 assert_contains "$(section unknown)" "unknown command"    "unknown command rejected"
 assert_contains "$(section missing)" "no such interface"  "missing interface rejected"
 assert_contains "$(section arity)"   "wrong number of arguments" "arity is enforced"
-assert_contains "$(section mutate)"  "OK"                 "root over unix may mutate"
+
+# Authenticated: the command must get past authorization. Whether netlink then
+# succeeds depends on privileges, which is not what this asserts.
+case "$(section mutate)" in
+  *NOAUTH*|*NOPERM*)
+    echo "FAIL: authenticated client denied: $(section mutate)" >&2; exit 1 ;;
+  *) echo "PASS: authenticated client is authorized to mutate" ;;
+esac
+
+# Unauthenticated: SO_PEERCRED alone decides, so the answer depends on uid.
+# Both directions matter -- root must get in without credentials, others must
+# not.
+peercred=$(section peercred)
+if [ "$(id -u)" = "0" ]; then
+  case "${peercred}" in
+    *NOAUTH*|*NOPERM*)
+      echo "FAIL: root over unix was not pre-authenticated: ${peercred}" >&2; exit 1 ;;
+    *) echo "PASS: root over unix is pre-authenticated" ;;
+  esac
+else
+  assert_contains "${peercred}" "NOAUTH" "non-root over unix is not pre-authenticated"
+fi
 
 pipeline=$(section pipeline)
 n=$(printf '%s' "${pipeline}" | grep -c 'PONG' || true)
@@ -119,7 +156,7 @@ config_iface ${T}/interfaces
 listen unix://${T}/linkd2.sock
 listen tcp://127.0.0.1:16794
 EOF
-out=$(timeout 15 unshare -Urn "${BIN}" --config "${T}/noauth.cnf" 2>&1 || true)
+out=$(timeout 15 "${BIN}" --config "${T}/noauth.cnf" 2>&1 || true)
 assert_contains "${out}" "refusing to listen" "tcp without authfile is refused"
 
 echo "==> test_resp done"

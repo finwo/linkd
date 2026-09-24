@@ -103,20 +103,12 @@ static void render(const resp_object *o, int depth) {
   }
 }
 
-int linkd_call(int argc, const char **argv) {
-  const char *sockpath = NULL;
-  int fd = connect_daemon(&sockpath);
-  if (fd < 0) return 1;
-
-  resp_object *req = resp_array_init();
-  if (!req) { close(fd); return 1; }
-  for (int i = 0; i < argc; i++) resp_array_append_bulk(req, argv[i]);
-
+static int send_obj(int fd, resp_object *o) {
   char  *buf = NULL;
   size_t len = 0;
-  int    rc  = resp_serialize(req, &buf, &len);
-  resp_free(req);
-  if (rc != 0) { close(fd); return 1; }
+  int    rc  = resp_serialize(o, &buf, &len);
+  resp_free(o);
+  if (rc != 0) return -1;
 
   size_t sent = 0;
   while (sent < len) {
@@ -125,12 +117,57 @@ int linkd_call(int argc, const char **argv) {
       if (n < 0 && errno == EINTR) continue;
       fprintf(stderr, "write failed: %s\n", strerror(errno));
       free(buf);
-      close(fd);
-      return 1;
+      return -1;
     }
     sent += (size_t)n;
   }
   free(buf);
+  return 0;
+}
+
+// $LINKD_AUTH as "user:password", or just "password" for the default user.
+static int maybe_auth(int fd) {
+  const char *cred = getenv("LINKD_AUTH");
+  if (!cred || !*cred) return 0;
+
+  char *copy = strdup(cred);
+  if (!copy) return -1;
+  char *sep  = strchr(copy, ':');
+  const char *user = "default";
+  const char *pass = copy;
+  if (sep) { *sep = '\0'; user = copy; pass = sep + 1; }
+
+  resp_object *a = resp_array_init();
+  resp_array_append_bulk(a, "AUTH");
+  resp_array_append_bulk(a, user);
+  resp_array_append_bulk(a, pass);
+  free(copy);
+
+  if (send_obj(fd, a) != 0) return -1;
+
+  resp_object *r = resp_read(fd);
+  if (!r) {
+    fprintf(stderr, "no reply to AUTH\n");
+    return -1;
+  }
+  int bad = (r->type == RESPT_ERROR);
+  if (bad) fprintf(stderr, "%s\n", r->u.s ? r->u.s : "AUTH failed");
+  resp_free(r);
+  return bad ? -1 : 0;
+}
+
+int linkd_call(int argc, const char **argv) {
+  const char *sockpath = NULL;
+  int fd = connect_daemon(&sockpath);
+  if (fd < 0) return 1;
+
+  if (maybe_auth(fd) != 0) { close(fd); return 1; }
+
+  resp_object *req = resp_array_init();
+  if (!req) { close(fd); return 1; }
+  for (int i = 0; i < argc; i++) resp_array_append_bulk(req, argv[i]);
+
+  if (send_obj(fd, req) != 0) { close(fd); return 1; }
 
   resp_object *reply = resp_read(fd);
   close(fd);

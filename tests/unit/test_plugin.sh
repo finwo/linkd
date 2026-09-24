@@ -16,15 +16,15 @@ BIN="${BUILD_DIR}/linkd"
 FIXTURE="${ROOT}/tests/fixtures/plugin-echo.sh"
 assert_path_exists "${FIXTURE}" "shell plugin fixture present"
 
-command -v unshare >/dev/null 2>&1 || { echo "SKIP: unshare unavailable"; exit 0; }
-unshare -Urn true 2>/dev/null   || { echo "SKIP: user namespaces unavailable"; exit 0; }
-
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
 mkdir -p "${T}/net"
 
+# No `auto`: nothing is applied, so the daemon needs no CAP_NET_ADMIN and
+# cannot modify the host. The plugin still sees real PORT/RIF/NEIGH events,
+# because the startup resync dumps the interfaces that already exist -- and
+# reading them is unprivileged.
 cat > "${T}/net/interfaces" <<EOF
-auto lo
 iface lo
     address 127.0.0.1/8
 EOF
@@ -41,7 +41,7 @@ run_linkd() {
   # run_linkd <config> [env assignments...]
   _cfg=$1; shift
   env "$@" PLUGIN_LOG="${T}/plugin.log" \
-    timeout 15 unshare -Urn "${BIN}" --config "${_cfg}" --resync-interval 0 \
+    timeout 15 "${BIN}" --config "${_cfg}" --resync-interval 0 \
     >"${T}/linkd.log" 2>&1 || true
   cat "${T}/linkd.log"
 }
