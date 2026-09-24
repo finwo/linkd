@@ -8,19 +8,14 @@
 #define DP_RET_ERROR -1
 #define DP_RET_OK     0
 
-// Bumped whenever struct dp_ops changes shape once a real plugin has shipped.
-// Until then the structs below are fluid: extend freely without bumping.
-// Plugins declaring a different ABI are refused at load time rather than
-// crashing us later.
-#define LINKD_DATAPLANE_ABI 1
-
-// Where dlopen'd backends live. The openbcm package drops its backend here;
-// on hardware without a switching ASIC the directory is simply empty and we
-// fall back to the built-in kernel dataplane.
-#define LINKD_DATAPLANE_DIR "/usr/lib/linkd/dataplane"
-
-// Symbol every plugin must export
-#define LINKD_DATAPLANE_SYM "linkd_dataplane_ops"
+// Plugins are separate processes speaking RESP, declared in /etc/linkd.cnf:
+//
+//   plugin /usr/lib/linkd/bcm          spawned, RESP over stdio
+//   plugin tcp://user:pass@host:6789   connected to, RESP over the socket
+//
+// They advertise what they implement via COMMAND, and each operation is
+// broadcast to every plugin advertising its verb. There is no in-process ABI
+// and nothing is dlopen'd, so a plugin can be written in any language.
 
 enum dp_fec {
   DP_FEC_UNSET = 0,
@@ -75,55 +70,35 @@ struct dp_route {
   uint32_t           table;      // kernel route-table id; RT_TABLE_MAIN = default VRF
 };
 
-struct dp_ops {
-  uint32_t    abi;
-  const char *name;
+// Start every plugin declared in the config. Plugins that fail to start are
+// retried with backoff; this is not an error in itself.
+int  dp_start(void);
+void dp_stop(void);
 
-  // Return DP_RET_OK if this backend can drive the hardware in this box.
-  // Must be cheap and must not have side effects; it is called on every
-  // backend before one is chosen.
-  int  (*probe)(void);
+// True when at least one plugin is configured. Without any, every operation
+// below is a successful no-op -- the kernel has already done the work by the
+// time these are called.
+int  dp_have_plugins(void);
 
-  int  (*init)(void);
-  void (*fini)(void);
+// Operations. Each is broadcast to every plugin advertising the verb; all of
+// them are called even if an earlier one fails, so plugins cannot end up in
+// states that disagree with each other. Returns DP_RET_ERROR if any
+// non-optional plugin failed.
+int dp_port_apply(const struct dp_port *port);
+int dp_port_admin(const char *ifname, bool up);
+int dp_port_mtu(const char *ifname, uint32_t mtu);
 
-  // Applies ports.cnf properties.
-  int (*port_apply)(const struct dp_port *port);
+int dp_rif_add(const struct dp_rif *rif);
+int dp_rif_del(const struct dp_rif *rif);
 
-  // Driven by the netlink mirror, not by configuration: ifupdown sets these
-  // on the netdev and we replicate them into the hardware.
-  int (*port_admin)(const char *ifname, bool up);
-  int (*port_mtu)(const char *ifname, uint32_t mtu);
+int dp_neigh_add(const struct dp_neigh *neigh);
+int dp_neigh_del(const struct dp_neigh *neigh);
 
-  int (*rif_add)(const struct dp_rif *rif);
-  int (*rif_del)(const struct dp_rif *rif);
+int dp_route_add(const struct dp_route *route);
+int dp_route_del(const struct dp_route *route);
 
-  int (*neigh_add)(const struct dp_neigh *neigh);
-  int (*neigh_del)(const struct dp_neigh *neigh);
-
-  int (*route_add)(const struct dp_route *route);
-  int (*route_del)(const struct dp_route *route);
-
-  // Drop all state and rebuild it from the kernel. Netlink can and does drop
-  // messages under load (ENOBUFS), so event-following alone drifts; every
-  // backend needs to support a full resync.
-  int (*resync)(void);
-};
-
-// Built-in backend. Always available, always probes successfully.
-const struct dp_ops * dp_kernel_ops(void);
-
-// Load plugins from LINKD_DATAPLANE_DIR. Safe to call when the directory is
-// absent or empty.
-int dp_plugins_load(const char *dir);
-
-// Pick a backend. `force` may name one explicitly (skips probing), or be NULL
-// to probe every registered backend and take the first that claims the box.
-int dp_select(const char *force);
-
-const struct dp_ops * dp_active(void);
-
-int  dp_init(void);
-void dp_fini(void);
+// Netlink drops messages under load (ENOBUFS), so following events alone
+// drifts; plugins are told to rebuild from scratch periodically.
+int dp_resync(void);
 
 #endif // __LINKD_DATAPLANE_H__

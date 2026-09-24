@@ -9,6 +9,7 @@
 #include "finwo/cnfparse.h"
 
 #include "config/daemon.h"
+#include "dataplane/plugin.h"
 #include "util/config.h"
 
 static struct linkd_daemon_cfg cfg;
@@ -147,7 +148,21 @@ static struct cnf_directive *h_plugin(FILE *fd, struct cnf_directive *dir, void 
       continue;
     }
 
-    // Not ours: hand it back so the caller re-dispatches it.
+    // Unknown to us: the plugin gets first refusal. Starting it here is what
+    // makes its config vocabulary discoverable at all -- CONFIG LIST cannot
+    // be asked of a process that is not running.
+    struct dp_plugin *dp = dp_plugin_for(p->target);
+    if (dp && dp_plugin_config_supports(dp, sub->name)) {
+      if (dp_plugin_config_set(dp, sub->name, sub->argv, sub->argc) != 0) {
+        cfg_error("plugin %s rejected `%s'", p->target, sub->name);
+        cnf_directive_free(sub);
+        return NULL;
+      }
+      cnf_directive_free(sub);
+      continue;
+    }
+
+    // Neither side claims it: ends the stanza, hand it back for re-dispatch.
     return sub;
   }
 }

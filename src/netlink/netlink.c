@@ -24,7 +24,7 @@
 #include "rxi/log.h"
 
 #include "dataplane.h"
-#include "dataplane/registry.h"
+#include "dataplane/plugin.h"
 
 #include "filter.h"
 #include "netlink.h"
@@ -175,7 +175,6 @@ static int handle_link(struct nlmsghdr *nh) {
   int master = 0;
   int is_vrf = 0;
   uint32_t vrf_table = 0;
-  const struct dp_ops *dp;
   int len;
 
   len = (int)(nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ifi)));
@@ -216,11 +215,8 @@ static int handle_link(struct nlmsghdr *nh) {
       vrf_master_remove(ifi->ifi_index);
       log_info("netlink: vrf %s removed", ifname);
     }
-    dp = dp_active();
-    if (dp && dp->port_admin) {
-      if (dp->port_admin(ifname, false) != DP_RET_OK) {
-        log_error("netlink: port_admin %s down failed", ifname);
-      }
+    if (dp_port_admin(ifname, false) != DP_RET_OK) {
+      log_error("netlink: port_admin %s down failed", ifname);
     }
     return 0;
   }
@@ -237,18 +233,12 @@ static int handle_link(struct nlmsghdr *nh) {
     }
   }
 
-  dp = dp_active();
-  if (!dp) return 0;
   log_debug("netlink: link %s %s mtu %u", ifname, (ifi->ifi_flags & IFF_UP) ? "up" : "down", mtu);
-  if (dp->port_admin) {
-    if (dp->port_admin(ifname, (ifi->ifi_flags & IFF_UP) ? true : false) != DP_RET_OK) {
-      log_error("netlink: port_admin %s failed", ifname);
-    }
+  if (dp_port_admin(ifname, (ifi->ifi_flags & IFF_UP) ? true : false) != DP_RET_OK) {
+    log_error("netlink: port_admin %s failed", ifname);
   }
-  if (mtu && dp->port_mtu) {
-    if (dp->port_mtu(ifname, mtu) != DP_RET_OK) {
-      log_error("netlink: port_mtu %s %u failed", ifname, mtu);
-    }
+  if (mtu && dp_port_mtu(ifname, mtu) != DP_RET_OK) {
+    log_error("netlink: port_mtu %s %u failed", ifname, mtu);
   }
   return 0;
 }
@@ -259,7 +249,6 @@ static int handle_addr(struct nlmsghdr *nh) {
   char ifname[IF_NAMESIZE] = "";
   struct dp_rif rif;
   struct dp_addr addr;
-  const struct dp_ops *dp;
   void *bytes = NULL;
   size_t want = 0;
   int len;
@@ -293,14 +282,12 @@ static int handle_addr(struct nlmsghdr *nh) {
     return 0;
   }
 
-  dp = dp_active();
-  if (!dp) return 0;
   del = (nh->nlmsg_type == RTM_DELADDR);
   log_debug("netlink: rif %s %s table %u", ifname, del ? "del" : "add", rif.table);
   if (del) {
-    if (dp->rif_del && dp->rif_del(&rif) != DP_RET_OK) log_error("netlink: rif_del %s failed", ifname);
+    if (dp_rif_del(&rif) != DP_RET_OK) log_error("netlink: rif_del %s failed", ifname);
   } else {
-    if (dp->rif_add && dp->rif_add(&rif) != DP_RET_OK) log_error("netlink: rif_add %s failed", ifname);
+    if (dp_rif_add(&rif) != DP_RET_OK) log_error("netlink: rif_add %s failed", ifname);
   }
   return 0;
 }
@@ -310,7 +297,6 @@ static int handle_neigh(struct nlmsghdr *nh) {
   struct rtattr *tb[NDA_MAX + 1];
   char ifname[IF_NAMESIZE] = "";
   struct dp_neigh neigh;
-  const struct dp_ops *dp;
   int len;
   int del;
 
@@ -346,13 +332,11 @@ static int handle_neigh(struct nlmsghdr *nh) {
     return 0;
   }
 
-  dp = dp_active();
-  if (!dp) return 0;
   log_debug("netlink: neigh %s %s table %u", ifname, del ? "del" : "add", neigh.table);
   if (del) {
-    if (dp->neigh_del && dp->neigh_del(&neigh) != DP_RET_OK) log_error("netlink: neigh_del failed");
+    if (dp_neigh_del(&neigh) != DP_RET_OK) log_error("netlink: neigh_del failed");
   } else {
-    if (dp->neigh_add && dp->neigh_add(&neigh) != DP_RET_OK) log_error("netlink: neigh_add failed");
+    if (dp_neigh_add(&neigh) != DP_RET_OK) log_error("netlink: neigh_add failed");
   }
   return 0;
 }
@@ -363,7 +347,6 @@ static int handle_route(struct nlmsghdr *nh) {
   struct dp_route route;
   struct dp_nexthop nhops[NL_MAX_NH];
   char nhnames[NL_MAX_NH][IF_NAMESIZE];
-  const struct dp_ops *dp;
   uint32_t table;
   uint32_t metric = 0;
   int len;
@@ -441,14 +424,12 @@ static int handle_route(struct nlmsghdr *nh) {
   route.nh = nh_count ? nhops : NULL;
   route.nh_count = nh_count;
 
-  dp = dp_active();
-  if (!dp) return 0;
   del = (nh->nlmsg_type == RTM_DELROUTE);
   log_debug("netlink: route %s table %u nh %zu", del ? "del" : "add", table, nh_count);
   if (del) {
-    if (dp->route_del && dp->route_del(&route) != DP_RET_OK) log_error("netlink: route_del table %u failed", table);
+    if (dp_route_del(&route) != DP_RET_OK) log_error("netlink: route_del table %u failed", table);
   } else {
-    if (dp->route_add && dp->route_add(&route) != DP_RET_OK) log_error("netlink: route_add table %u failed", table);
+    if (dp_route_add(&route) != DP_RET_OK) log_error("netlink: route_add table %u failed", table);
   }
   return 0;
 }
@@ -570,7 +551,6 @@ int nl_dump(int fd, uint16_t type, int family) {
 // Full converge: VRF map first (routes resolve against it), then RIFs,
 // neighbours, routes, then the backend's own resync backstop.
 int nl_resync(int fd) {
-  const struct dp_ops *dp;
   int fails = 0;
 
   nl_filter_reset();
@@ -584,9 +564,8 @@ int nl_resync(int fd) {
   if (nl_dump(fd, RTM_GETROUTE, AF_INET) != 0) fails++;
   if (nl_dump(fd, RTM_GETROUTE, AF_INET6) != 0) fails++;
 
-  dp = dp_active();
-  if (dp && dp->resync && dp->resync() != DP_RET_OK) {
-    log_error("netlink: backend resync failed");
+  if (dp_resync() != DP_RET_OK) {
+    log_error("netlink: plugin resync failed");
     fails++;
   }
   if (fails) {
@@ -607,7 +586,9 @@ int nl_run(int fd, int resync_interval_s) {
   clock_gettime(CLOCK_MONOTONIC, &last_resync);
 
   while (!nl_stop) {
-    struct pollfd pfds[2];
+    // Netlink occupies slot 0; the IPC server contributes its listeners and
+    // every live connection after it.
+    struct pollfd pfds[1 + IPC_MAX_POLLFDS];
     int nfds = 1;
     struct timespec now;
     long wait_ms = 30000;
@@ -615,12 +596,8 @@ int nl_run(int fd, int resync_interval_s) {
 
     pfds[0].fd = fd;
     pfds[0].events = POLLIN;
-    int ipcfd = ipc_fd();
-    if (ipcfd >= 0) {
-      pfds[1].fd = ipcfd;
-      pfds[1].events = POLLIN;
-      nfds = 2;
-    }
+    pfds[0].revents = 0;
+    nfds += ipc_pollfds(&pfds[1], IPC_MAX_POLLFDS);
 
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (resync_interval_s > 0) {
@@ -646,9 +623,7 @@ int nl_run(int fd, int resync_interval_s) {
     }
     if (!pr) continue;
 
-    if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-      ipc_handle();
-    }
+    if (nfds > 1) ipc_dispatch(&pfds[1], nfds - 1);
     if (!(pfds[0].revents & POLLIN)) continue;
 
     for (;;) {

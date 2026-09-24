@@ -10,8 +10,10 @@ SRC+=$(wildcard src/*/*/*.c)
 CFLAGS?=-Wall -Wextra -O2
 LDFLAGS?=
 
-# Dataplane plugins are dlopen'd at runtime
-LDFLAGS+=-ldl
+# Drop unreferenced code: dependencies export whole libraries, of which we use
+# a part (pbkdf2 also ships SHA-1).
+CFLAGS +=-ffunction-sections -fdata-sections
+LDFLAGS+=-Wl,--gc-sections
 
 INCLUDES:=
 INCLUDES+=-I src

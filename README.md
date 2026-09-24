@@ -27,7 +27,8 @@ retry. Netlink acks before we reply, so callers are synchronous by
 construction. `tests/unit/test_netlink.sh` enforces this.
 
 **No libnl or libmnl.** `src/netlink/netlink.h` talks to the kernel directly.
-The only link-time dependency is `-ldl`, for `dlopen`ing dataplane plugins.
+There are no link-time dependencies: plugins are separate processes, so
+nothing is dlopen'd.
 
 **Accepted IPC connections are blocking.** The listener is non-blocking so it
 can sit in `poll()`, but the accepted connection must not be: a non-blocking
@@ -97,16 +98,109 @@ because a file moved is indistinguishable from one that matches nothing because
 the code is correct, and only the second should pass.
 
 
+Configuration
+-------------
+
+`/etc/linkd.cnf`, same grammar as the rest:
+
+    config_ports  /etc/network/ports /etc/network/ports.d/*.cnf
+    config_iface  /etc/network/interfaces /etc/network/interfaces.d/*.cnf
+    listen        unix:///var/run/linkd.sock
+    listen        tcp://127.0.0.1:6789
+    authfile      /etc/linkd.passwd
+    plugin        /usr/lib/linkd/bcm
+
+A missing file is not an error; the defaults above are what you get. Patterns
+are expanded by `source`, so one matching nothing is fine -- a system with no
+drop-ins is normal.
+
+
+Clients and authorization
+-------------------------
+
+The daemon speaks RESP on every address it is told to `listen` on, so
+`redis-cli` works as a client. `linkctl` sends whatever you give it:
+
+    linkctl PING
+    linkctl COMMAND
+    linkctl IFQUERY lo
+
+`ifup`, `ifdown`, `ifquery` and `ifreload` are symlinks that send the
+corresponding command.
+
+A connection has one of three roles, and every command names the minimum it
+needs:
+
+| Role       | Commands                                      |
+| ---------- | --------------------------------------------- |
+| *none*     | `PING`, `AUTH`, `QUIT`                        |
+| `readonly` | + `IFQUERY`, `INFO`, `COMMAND`                |
+| `full`     | + `IFUP`, `IFDOWN`, `IFRELOAD`                |
+
+**A root peer on a unix socket starts with `full`**: the kernel vouches for the
+uid via `SO_PEERCRED`, which beats any password. Everyone else starts at *none*
+and authenticates with `AUTH <user> <password>`.
+
+Credentials live in the file named by `authfile`:
+
+    admin:$pbkdf2-sha256$29000$<salt>$<hash>:full
+    watcher:$pbkdf2-sha256$29000$<salt>$<hash>:readonly
+
+Generate entries with `linkctl hash [user]`. The format is passlib's
+`pbkdf2_sha256`, adapted base64 and all, so entries made by passlib or Django
+work unchanged. A missing role field means `readonly`.
+
+The file is refused outright if it is world-writable, and warned about if it is
+readable beyond its owner. **Binding a `tcp://` listener without an `authfile`
+is a hard error**, so an unauthenticated network listener cannot be created by
+forgetting something.
+
+
 Dataplane plugins
 -----------------
 
-`src/dataplane/plugin.c` `dlopen`s shared objects from
-`/usr/lib/linkd/dataplane/` (`LINKD_DATAPLANE_DIR` in `src/dataplane.h`), each
-exporting a `struct dp_ops` matching `LINKD_DATAPLANE_ABI`. Without one, linkd
-uses the built-in kernel dataplane.
+A plugin is a **program**, not a shared library. linkd talks to it in RESP
+(the Redis wire protocol), so a plugin can be written in anything that can read
+and write a pipe. `tests/fixtures/plugin-echo.sh` is a working one in POSIX
+shell, and the test suite drives it, so that claim is tested rather than
+asserted.
 
-`plugins/bcm/` is the Broadcom XGS plugin. It is not built by the top-level
-Makefile and requires `SDK=` pointing at a built OpenBCM tree:
+Plugins are declared in `/etc/linkd.cnf`:
+
+    plugin /usr/lib/linkd/bcm              spawned, RESP over stdin/stdout
+    plugin tcp://user:pass@host:6789       connected to, AUTH if credentials
+        optional                           failures do not fail operations
+
+On startup linkd asks each plugin `COMMAND` for the verbs it implements and
+`INFO` for its identity. `INFO` must report `hardware_detected:0|1` in its
+`# Stats` section; a plugin answering `0` is refused, which is how a driver for
+absent hardware declines rather than failing later and opaquely.
+
+Operations are **broadcast** to every plugin advertising the verb, and all of
+them are called even if an earlier one fails, so plugins cannot end up
+disagreeing about what was applied:
+
+    PORT ADMIN <if> <up|down>      RIF   ADD|DEL <if> <cidr> table <n>
+    PORT MTU <if> <mtu>            NEIGH ADD|DEL <if> <ip> <mac> table <n>
+    PORT APPLY <if> [speed N] [fec X] [autoneg 0|1]
+    ROUTE ADD|DEL <dst> [via <gw> dev <if>]... [metric N] table <n>
+    RESYNC
+
+Any `-ERR` from a plugin fails the operation unless that plugin is `optional`.
+
+A plugin may also own configuration. When the `plugin` stanza hits a
+sub-directive linkd does not recognise, it starts the plugin, asks `CONFIG
+LIST` for the directives it accepts, and forwards matching ones as
+`CONFIG SET <directive> <args...>`. A directive neither side claims ends the
+stanza and is re-dispatched normally.
+
+A plugin that dies or stops answering is restarted with backoff (0.5s
+doubling to 30s). While it is down its operations fail, so a switch never
+silently accepts configuration it is not programming into hardware.
+
+`plugins/bcm/` is the Broadcom XGS plugin, currently a skeleton that answers
+`COMMAND`/`INFO` and errors on everything else. It is not built by the
+top-level Makefile and requires `SDK=` pointing at a built OpenBCM tree:
 
     make -C plugins/bcm SDK=/path/to/opennsl
 

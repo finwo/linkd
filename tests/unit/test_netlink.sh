@@ -50,29 +50,45 @@ echo "PASS: no /sbin/ip reference in linkd sources"
 # containing netlink sends, the two checks above are meaningless.
 assert_path_exists "${SRC}/netlink/rtnl.c" "rtnl.c present (the netlink path exists)"
 
-# --- 2. the accepted IPC connection must be blocking ----------------------
-# A non-blocking accepted fd made the server read EAGAIN, stdio report EOF, and
-# cfg_parse see an empty stream -> empty reply. That was the root cause of the
-# IPC flakiness, not timing.
+# --- 2. accepted connections must be non-blocking -------------------------
+# This is the inverse of what it once asserted. Under the line protocol the
+# server read a connection to EOF with stdio, so a non-blocking fd returned
+# EAGAIN, stdio reported EOF, and the reply came back empty.
+#
+# RESP is length-prefixed, so a partial read is detectable rather than
+# indistinguishable from end-of-input: resp_read_buf reports "incomplete" and
+# the connection waits for more data. Blocking accepts would now let one
+# client stall netlink for the whole daemon.
 IPC="${SRC}/ipc.c"
 assert_path_exists "${IPC}" "ipc.c present"
-if grep -q 'accept4(ipc_sock.*SOCK_NONBLOCK' "${IPC}"; then
-  echo "FAIL: accepted IPC conn is non-blocking (reintroduces empty-reply race)" >&2
+if ! grep -q 'accept4(.*SOCK_NONBLOCK' "${IPC}"; then
+  echo "FAIL: accepted connections are blocking; one slow client stalls netlink" >&2
   exit 1
 fi
-echo "PASS: accepted IPC connection is blocking"
+echo "PASS: accepted connections are non-blocking"
 
-# --- 3. clients must half-close after writing -----------------------------
-# Without shutdown(SHUT_WR) the server blocks waiting for a second command
-# until its receive timeout expires.
-for c in ifup ifdown ifquery ifreload linkctl; do
-  f="${SRC}/cli/${c}.c"
-  assert_path_exists "${f}" "cli/${c}.c present"
-  if ! grep -q 'shutdown(sock, SHUT_WR)' "${f}"; then
-    echo "FAIL: ${c} does not shutdown(SHUT_WR) after write" >&2
-    exit 1
-  fi
-done
-echo "PASS: all clients half-close after sending the command"
+# Non-blocking is only correct with incremental parsing behind it.
+if ! grep -q 'resp_read_buf' "${IPC}"; then
+  echo "FAIL: no resp_read_buf; non-blocking reads need incremental parsing" >&2
+  exit 1
+fi
+echo "PASS: reads are buffered through resp_read_buf"
+
+# Partial writes must be buffered too, or a slow reader stalls the daemon
+# just as effectively as a slow writer would.
+if ! grep -q 'POLLOUT' "${IPC}"; then
+  echo "FAIL: no POLLOUT handling; a slow reader would block the daemon" >&2
+  exit 1
+fi
+echo "PASS: writes are buffered and drained on POLLOUT"
+
+# --- 3. one client must not be able to wedge the daemon -------------------
+# The old server serviced a single connection per poll wakeup, synchronously.
+if grep -q 'IPC_MAX_CONNS' "${SRC}/ipc.h"; then
+  echo "PASS: server keeps a bounded connection table"
+else
+  echo "FAIL: no connection limit; an unbounded fd table is a DoS" >&2
+  exit 1
+fi
 
 echo "==> test_netlink done"

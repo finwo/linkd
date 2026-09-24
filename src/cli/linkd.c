@@ -20,7 +20,7 @@ extern "C" {
 #include "config/ports.h"
 #include "config/ifaces.h"
 #include "dataplane.h"
-#include "dataplane/registry.h"
+#include "dataplane/plugin.h"
 #include "ipc.h"
 #include "netlink/netlink.h"
 #include "netlink/rtnl.h"
@@ -66,11 +66,8 @@ static void stop_handler(int sig) {
 }
 
 static int apply_ports(void) {
-  const struct dp_ops *dp = dp_active();
-  struct linkd_port    *cur;
-  struct dp_port       port;
-
-  if (!dp || !dp->port_apply) return 0;
+  struct linkd_port *cur;
+  struct dp_port     port;
 
   for ( cur = ports_list() ; cur ; cur = cur->next ) {
     memset(&port, 0, sizeof(port));
@@ -79,7 +76,7 @@ static int apply_ports(void) {
     port.fec     = cur->fec;
     port.autoneg = cur->autoneg;
 
-    if (dp->port_apply(&port) != DP_RET_OK) {
+    if (dp_port_apply(&port) != DP_RET_OK) {
       log_warn("%s: failed to apply port configuration", cur->name);
     }
   }
@@ -219,7 +216,6 @@ int main_linkd(int argc, char **argv) {
   // Cast for argparse which wants const char**
   const char **c_argv = (const char **)argv;
   char *config_path = LINKD_CONFIG_PATH;
-  char *dataplane  = NULL;
   char *loglevel = "info";
   char *logfile_path = NULL;
   char *ready_file = "";
@@ -230,7 +226,6 @@ int main_linkd(int argc, char **argv) {
   struct argparse_option options[] = {
     OPT_HELP(),
     OPT_STRING('c', "config", &config_path, "Configuration file (default: " LINKD_CONFIG_PATH ")", NULL, 0, 0),
-    OPT_STRING('d', "dataplane", &dataplane, "Force a dataplane backend", NULL, 0, 0),
     OPT_STRING('v', "verbosity", &loglevel, "log verbosity: fatal,error,warn,info,debug,trace (default: info)", NULL, 0, 0),
     OPT_STRING(0, "log", &logfile_path, "also write log to file (SIGHUP reopens for logrotate)", NULL, 0, 0),
     OPT_INTEGER(0, "resync-interval", &resync_interval, "seconds between full resyncs (0 disables timer)", NULL, 0, 0),
@@ -242,7 +237,6 @@ int main_linkd(int argc, char **argv) {
   daemon_cfg_register();
   ports_register();
   ifaces_register();
-  ipc_register();
 
   struct argparse argparse;
   argparse_init(&argparse, options, usage, 0);
@@ -321,23 +315,13 @@ int main_linkd(int argc, char **argv) {
     }
   }
 
-  // Startup order is load-bearing: ports -> backend select -> init ->
-  // port_apply -> nl_open -> initial resync -> ready -> event loop. frr must
-  // not start before the ready file exists or zebra misses the swpN netdevs.
+  // Startup order is load-bearing: ports -> plugins -> port_apply -> nl_open
+  // -> initial resync -> ready -> event loop. frr must not start before the
+  // ready file exists or zebra misses the swpN netdevs.
   //
-  // The built-in kernel backend is registered first so it acts as the
-  // fallback; plugins installed by hardware packages are probed ahead of it.
-  dp_register(dp_kernel_ops());
-  dp_plugins_load(LINKD_DATAPLANE_DIR);
-
-  if (dp_select(dataplane) != DP_RET_OK) {
-    return 1;
-  }
-
-  if (dp_init() != DP_RET_OK) {
-    log_error("dataplane: initialisation failed");
-    return 1;
-  }
+  // A plugin that fails to start is not fatal: the backoff retries it, and
+  // with none configured every dataplane call is a no-op.
+  dp_start();
 
   if (ipc_init() != 0) {
     log_warn("ipc: init failed, ifup/ifquery will not be available");
@@ -349,7 +333,7 @@ int main_linkd(int argc, char **argv) {
 
   nl_fd = nl_open();
   if (nl_fd < 0) {
-    dp_fini();
+    dp_stop();
     ports_free();
     ifaces_free();
     ipc_fini();
@@ -364,7 +348,7 @@ int main_linkd(int argc, char **argv) {
     log_fatal("netlink: initial resync failed");
     close(nl_fd);
     ipc_fini();
-    dp_fini();
+    dp_stop();
     ports_free();
     ifaces_free();
     return 1;
@@ -374,7 +358,7 @@ int main_linkd(int argc, char **argv) {
     if (ready_publish(ready_file) != 0) {
       close(nl_fd);
       ipc_fini();
-      dp_fini();
+      dp_stop();
       ports_free();
       ifaces_free();
       return 1;
@@ -387,7 +371,7 @@ int main_linkd(int argc, char **argv) {
   ipc_fini();
 
   ready_remove(ready_file);
-  dp_fini();
+  dp_stop();
   ports_free();
   ifaces_free();
 

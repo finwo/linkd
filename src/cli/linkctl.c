@@ -1,93 +1,95 @@
 #define _GNU_SOURCE
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libgen.h>
-#include <sys/socket.h>
-#include <sys/un.h>
+#include <strings.h>
+#include <termios.h>
 #include <unistd.h>
 
-#include "config/daemon.h"
+#include "cli/client.h"
 #include "registry.h"
+#include "util/auth.h"
 
+static void usage(const char *prog) {
+  fprintf(stderr, "usage: %s <command> [args...]\n", prog);
+  fprintf(stderr, "       %s COMMAND          list what the daemon accepts\n", prog);
+  fprintf(stderr, "       %s hash [user]      generate a password-file entry\n", prog);
+}
 
-int main_linkctl(int argc, char *argv[]) {
-  // linkctl is a tiny shim: linkctl <cmd> [args...] -> send "cmd [args...]\n" to /var/run/linkd.sock
-  // It does NOT handle being called as ifup via argv[0]; those have their own mains.
-  if (argc < 2) {
-    fprintf(stderr, "usage: %s <ifup|ifdown|ifquery|ifreload> [args...]\n", argv[0]);
-    return 1;
-  }
-  const char *cmd = argv[1];
-  int cmd_argc = argc - 2;
-  char **cmd_argv = argv + 2;
-  int sock;
-  struct sockaddr_un addr;
-  char buf[4096];
+static char *read_password(const char *prompt) {
+  struct termios old, quiet;
+  int   tty = isatty(STDIN_FILENO);
+  char *line = NULL;
+  size_t cap = 0;
 
-  const char *sockpath = linkd_client_socket();
-  sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-  if (sock < 0) {
-    perror("socket");
-    return 1;
-  }
-
-  memset(&addr, 0, sizeof(addr));
-  addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, sockpath, sizeof(addr.sun_path)-1);
-
-  if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    fprintf(stderr, "linkctl: connect %s failed: %s\n", sockpath, strerror(errno));
-    fprintf(stderr, "Is linkd running?\n");
-    close(sock);
-    return 1;
-  }
-
-  // Send command: "cmd [args...]\n"
-  {
-    char out[4096];
-    int len = 0;
-    len += snprintf(out+len, sizeof(out)-len, "%s", cmd);
-    for (int i = 0; i < cmd_argc; i++) {
-      len += snprintf(out+len, sizeof(out)-len, " %s", cmd_argv[i]);
+  if (tty) {
+    fprintf(stderr, "%s", prompt);
+    fflush(stderr);
+    if (tcgetattr(STDIN_FILENO, &old) == 0) {
+      quiet = old;
+      quiet.c_lflag &= (tcflag_t)~ECHO;
+      tcsetattr(STDIN_FILENO, TCSAFLUSH, &quiet);
+    } else {
+      tty = 0;
     }
-    len += snprintf(out+len, sizeof(out)-len, "\n");
-    if (write(sock, out, len) != len) {
-      perror("write");
-      close(sock);
+  }
+
+  ssize_t n = getline(&line, &cap, stdin);
+
+  if (tty) {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &old);
+    fprintf(stderr, "\n");
+  }
+
+  if (n <= 0) { free(line); return NULL; }
+  char *nl = strpbrk(line, "\r\n");
+  if (nl) *nl = '\0';
+  return line;
+}
+
+static int cmd_hash(int argc, char *argv[]) {
+  const char *user = argc > 1 ? argv[1] : NULL;
+
+  char *pass = read_password("Password: ");
+  if (!pass || !*pass) {
+    fprintf(stderr, "linkctl: empty password\n");
+    free(pass);
+    return 1;
+  }
+  if (isatty(STDIN_FILENO)) {
+    char *again = read_password("Again: ");
+    if (!again || strcmp(pass, again) != 0) {
+      fprintf(stderr, "linkctl: passwords do not match\n");
+      free(pass);
+      free(again);
       return 1;
     }
-    // Half-close: signals EOF to linkd so it stops reading and replies. Without
-    // this the server blocks waiting for a second command until its timeout.
-    shutdown(sock, SHUT_WR);
+    free(again);
   }
 
-  // Read response and pipe to stdout
-  // Protocol: server sends lines, first line is OK/ERR, but for ifquery the dump is the response
-  // We just pipe everything to stdout, and exit 0 on OK, 1 on ERR
-  int saw_ok = 0;
-  int saw_err = 0;
-  FILE *f = fdopen(sock, "r");
-  if (!f) {
-    perror("fdopen");
-    close(sock);
+  char *hash = auth_make_hash(pass, AUTH_DEFAULT_ITERATIONS);
+  memset(pass, 0, strlen(pass));
+  free(pass);
+
+  if (!hash) {
+    fprintf(stderr, "linkctl: could not generate hash\n");
     return 1;
   }
-  while (fgets(buf, sizeof(buf), f)) {
-    // Check for OK/ERR prefix on first line? Just print and detect
-    if (!saw_ok && !saw_err) {
-      if (!strncmp(buf, "OK", 2)) saw_ok = 1;
-      else if (!strncmp(buf, "ERR", 3)) saw_err = 1;
-    }
-    fputs(buf, stdout);
-    // For non-ifquery, the response is just OK/ERR line
-    // For ifquery, there may be multiple lines plus OK
-  }
-  fclose(f);
-  // If we saw ERR, exit 1
-  if (saw_err) return 1;
+
+  if (user) printf("%s:%s:readonly\n", user, hash);
+  else      printf("%s\n", hash);
+  free(hash);
   return 0;
+}
+
+int main_linkctl(int argc, char *argv[]) {
+  if (argc < 2) {
+    usage(argv[0]);
+    return 1;
+  }
+  if (!strcasecmp(argv[1], "hash")) return cmd_hash(argc - 1, argv + 1);
+
+  return linkd_call(argc - 1, (const char **)argv + 1);
 }
 
 __attribute__((constructor))
