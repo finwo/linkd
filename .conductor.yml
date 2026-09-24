@@ -28,6 +28,6 @@ tasks:
       - mkdir -p /tmp/depsrc && tar -xzf /tmp/dep.tar.gz -C /tmp/depsrc --strip-components=1
       - make -C /tmp/depsrc CC=gcc
       - install -m0755 /tmp/depsrc/dep /usr/local/bin/dep
+      # One line: script lines share a shell, so a `cd` persists into the next.
       # Linking needs an OpenBCM SDK; compiling still catches RESP breakage.
-      - cd plugins/bcm && dep install
-      - cd plugins/bcm && gcc -Wall -Wextra -Werror -Ilib/.dep/include -Isrc -c src/main.c -o /dev/null
+      - "cd plugins/bcm && dep install && gcc -Wall -Wextra -Werror -Ilib/.dep/include -Isrc -c src/main.c -o /dev/null"
