@@ -1,5 +1,5 @@
-#ifndef __UNOS_RTRNL_H__
-#define __UNOS_RTRNL_H__
+#ifndef __LINKD_RTRNL_H__
+#define __LINKD_RTRNL_H__
 
 #include <stdbool.h>
 
@@ -34,4 +34,4 @@ int rtnl_bridge_set_vlan_aware(const char *name, bool on);
 int rtnl_bridge_add_port(const char *br, const char *port);
 int rtnl_bridge_del_port(const char *br, const char *port);
 
-#endif // __UNOS_RTRNL_H__
+#endif // __LINKD_RTRNL_H__

@@ -9,8 +9,8 @@
 
 #include "ifaces.h"
 
-static struct unos_iface *ifaces = NULL;
-static struct unos_iface *ifaces_tail = NULL;
+static struct linkd_iface *ifaces = NULL;
+static struct linkd_iface *ifaces_tail = NULL;
 
 // Allocate an iface with every "unset" field at its sentinel.
 //
@@ -24,8 +24,8 @@ static struct unos_iface *ifaces_tail = NULL;
 // an existing device fails harmlessly. Centralising the sentinels here means a
 // new tri-state field cannot repeat that by being forgotten at one of the two
 // allocation sites.
-static struct unos_iface * iface_new(const char *name) {
-  struct unos_iface *ifc = calloc(1, sizeof(*ifc));
+static struct linkd_iface * iface_new(const char *name) {
+  struct linkd_iface *ifc = calloc(1, sizeof(*ifc));
   if (!ifc) return NULL;
   ifc->name              = name ? strdup(name) : NULL;
   ifc->vlan_id           = -1;
@@ -36,11 +36,11 @@ static struct unos_iface * iface_new(const char *name) {
 
 // Is this interface a bridge?
 //
-// Single source of truth: this was duplicated in cli/unosd.c and ipc.c, which
+// Single source of truth: this was duplicated in cli/linkd.c and ipc.c, which
 // is how the two could drift. Explicit bridge-* directives win; the name
 // prefix is only a fallback, and never applies to something already declared
 // a VLAN or enslaved to a VRF.
-bool iface_is_bridge(const struct unos_iface *ifc) {
+bool iface_is_bridge(const struct linkd_iface *ifc) {
   if (!ifc) return false;
   if (ifc->bridge_ports) return true;
   if (ifc->bridge_stp) return true;
@@ -52,7 +52,7 @@ bool iface_is_bridge(const struct unos_iface *ifc) {
 
 // Is this interface a VRF? `vrf-table` makes it one; `vrf <name>` makes it a
 // MEMBER of one, which is a different thing entirely.
-bool iface_is_vrf(const struct unos_iface *ifc) {
+bool iface_is_vrf(const struct linkd_iface *ifc) {
   return ifc && ifc->vrf_table >= 0;
 }
 
@@ -65,7 +65,7 @@ bool iface_is_vrf(const struct unos_iface *ifc) {
 // claimed explicitly, so `auto` and a hardcoded id cannot collide.
 #define VRF_TABLE_AUTO_BASE 1001
 static int vrf_table_auto(const char *name) {
-  struct unos_iface *cur;
+  struct linkd_iface *cur;
   int candidate;
   for (candidate = VRF_TABLE_AUTO_BASE; candidate < 2147483647; candidate++) {
     int taken = 0;
@@ -76,16 +76,15 @@ static int vrf_table_auto(const char *name) {
     }
     if (!taken) return candidate;
   }
-  fprintf(stderr, "vrf-table auto: no free table id\n");
-  exit(1);
+  return -1;
 }
 
-struct unos_iface * ifaces_list(void) {
+struct linkd_iface * ifaces_list(void) {
   return ifaces;
 }
 
-struct unos_iface * ifaces_find(const char *name) {
-  struct unos_iface *cur;
+struct linkd_iface * ifaces_find(const char *name) {
+  struct linkd_iface *cur;
   for (cur = ifaces; cur; cur = cur->next) {
     if (!strcmp(cur->name, name)) return cur;
   }
@@ -93,7 +92,7 @@ struct unos_iface * ifaces_find(const char *name) {
 }
 
 void ifaces_set_auto(const char *name, int flag) {
-  struct unos_iface *cur = ifaces_find(name);
+  struct linkd_iface *cur = ifaces_find(name);
   if (cur) {
     cur->auto_flag = flag;
     return;
@@ -110,8 +109,8 @@ void ifaces_set_auto(const char *name, int flag) {
 }
 
 void ifaces_free(void) {
-  struct unos_iface *cur = ifaces;
-  struct unos_iface *next;
+  struct linkd_iface *cur = ifaces;
+  struct linkd_iface *next;
   struct iface_addr *a, *anext;
   while (cur) {
     next = cur->next;
@@ -142,7 +141,7 @@ void ifaces_free(void) {
   ifaces_tail = NULL;
 }
 
-static void iface_add_addr(struct unos_iface *iface, const char *addr, const char *netmask) {
+static void iface_add_addr(struct linkd_iface *iface, const char *addr, const char *netmask) {
   struct iface_addr *a = calloc(1, sizeof(*a));
   a->address = strdup(addr);
   if (netmask) a->netmask = strdup(netmask);
@@ -170,12 +169,12 @@ struct cnf_directive * cfg_parse_auto(FILE *fd, struct cnf_directive *dir, void 
 
 // iface <name> [inet|inet6 <method>] -- cumulus style `iface <name>` preferred (no inet)
 struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void *user) {
-  struct unos_iface *iface;
+  struct linkd_iface *iface;
   (void)user;
 
   if (dir->argc < 1 || dir->argc > 3) {
-    fprintf(stderr, "`iface` directive: expected `iface <name>` or `iface <name> inet <method>`\n");
-    exit(1);
+    cfg_error("`iface` directive: expected `iface <name>` or `iface <name> inet <method>`");
+    goto fail;
   }
 
   const char *name = dir->argv[0];
@@ -190,12 +189,12 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     family = dir->argv[1];
     method = dir->argv[2];
     if (strcasecmp(family, "inet") && strcasecmp(family, "inet6")) {
-      fprintf(stderr, "`iface %s` unknown family: %s (expected inet/inet6)\n", name, family);
-      exit(1);
+      cfg_error("`iface %s` unknown family: %s (expected inet/inet6)", name, family);
+      goto fail;
     }
   } else {
-    fprintf(stderr, "`iface` directive: expected `iface <name>` or `iface <name> inet <method>`\n");
-    exit(1);
+    cfg_error("`iface` directive: expected `iface <name>` or `iface <name> inet <method>`");
+    goto fail;
   }
 
   // Find existing placeholder from auto, or create new
@@ -258,8 +257,8 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     if(0) {}
     else if (!strcasecmp("address", dir->name)) {
       if (dir->argc < 1 || dir->argc > 2) {
-        fprintf(stderr, "`address` expects 1 or 2 args (address + optional netmask)\n");
-        exit(1);
+        cfg_error("`address` expects 1 or 2 args (address + optional netmask)");
+        goto fail;
       }
       const char *addr = dir->argv[0];
       const char *nm = dir->argc > 1 ? dir->argv[1] : NULL;
@@ -267,49 +266,49 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     }
     else if (!strcasecmp("netmask", dir->name)) {
       if (dir->argc != 1) {
-        fprintf(stderr, "`netmask` expects 1 arg\n");
-        exit(1);
+        cfg_error("`netmask` expects 1 arg");
+        goto fail;
       }
       // Attach netmask to last address without netmask
       struct iface_addr *a = iface->addrs;
       if (!a) {
-        fprintf(stderr, "`netmask` without preceding `address`\n");
-        exit(1);
+        cfg_error("`netmask` without preceding `address`");
+        goto fail;
       }
       while (a->next) a = a->next;
       free(a->netmask);
       a->netmask = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("broadcast", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`broadcast` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`broadcast` expects 1 arg"); goto fail; }
       free(iface->broadcast);
       iface->broadcast = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("gateway", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`gateway` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`gateway` expects 1 arg"); goto fail; }
       free(iface->gateway);
       iface->gateway = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("mtu", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`mtu` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`mtu` expects 1 arg"); goto fail; }
       iface->mtu = atoi(dir->argv[0]);
     }
     else if (!strcasecmp("hwaddress", dir->name) || !strcasecmp("hw-address", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`hwaddress` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`hwaddress` expects 1 arg"); goto fail; }
       free(iface->hwaddress);
       iface->hwaddress = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("vlan-raw-device", dir->name) || !strcasecmp("vlan_raw_device", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`vlan-raw-device` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`vlan-raw-device` expects 1 arg"); goto fail; }
       free(iface->vlan_raw_device);
       iface->vlan_raw_device = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("vlan-id", dir->name) || !strcasecmp("vlan_id", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`vlan-id` expects 1 arg\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`vlan-id` expects 1 arg"); goto fail; }
       iface->vlan_id = atoi(dir->argv[0]);
     }
     else if (!strcasecmp("pre-up", dir->name) || !strcasecmp("pre_up", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`pre-up` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`pre-up` expects at least 1 arg"); goto fail; }
       // Join argv with spaces
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
@@ -322,7 +321,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->pre_up = cmd;
     }
     else if (!strcasecmp("post-up", dir->name) || !strcasecmp("post_up", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`post-up` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`post-up` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -334,7 +333,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->post_up = cmd;
     }
     else if (!strcasecmp("pre-down", dir->name) || !strcasecmp("pre_down", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`pre-down` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`pre-down` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -346,7 +345,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->pre_down = cmd;
     }
     else if (!strcasecmp("post-down", dir->name) || !strcasecmp("post_down", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`post-down` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`post-down` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -359,7 +358,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     }
     else if (!strcasecmp("up", dir->name)) {
       // alias for post-up
-      if (dir->argc < 1) { fprintf(stderr, "`up` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`up` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -371,7 +370,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->post_up = cmd;
     }
     else if (!strcasecmp("down", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`down` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`down` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -383,7 +382,7 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->pre_down = cmd;
     }
     else if (!strcasecmp("bridge-ports", dir->name) || !strcasecmp("bridge_ports", dir->name)) {
-      if (dir->argc < 1) { fprintf(stderr, "`bridge-ports` expects at least 1 arg\n"); exit(1); }
+      if (dir->argc < 1) { cfg_error("`bridge-ports` expects at least 1 arg"); goto fail; }
       size_t len = 0;
       for (int i=0;i<(int)dir->argc;i++) len += strlen(dir->argv[i])+1;
       char *cmd = calloc(1, len+1);
@@ -395,19 +394,19 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
       iface->bridge_ports = cmd;
     }
     else if (!strcasecmp("bridge-stp", dir->name) || !strcasecmp("bridge_stp", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`bridge-stp` expects 1 arg (on/off)\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`bridge-stp` expects 1 arg (on/off)"); goto fail; }
       free(iface->bridge_stp);
       iface->bridge_stp = strdup(dir->argv[0]);
     }
     else if (!strcasecmp("bridge-vlan-aware", dir->name) || !strcasecmp("bridge_vlan_aware", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`bridge-vlan-aware` expects 1 arg (yes/no)\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`bridge-vlan-aware` expects 1 arg (yes/no)"); goto fail; }
       if (!strcasecmp(dir->argv[0], "yes") || !strcasecmp(dir->argv[0], "on") || !strcasecmp(dir->argv[0], "1")) iface->bridge_vlan_aware = 1;
       else if (!strcasecmp(dir->argv[0], "no") || !strcasecmp(dir->argv[0], "off") || !strcasecmp(dir->argv[0], "0")) iface->bridge_vlan_aware = 0;
-      else { fprintf(stderr, "`bridge-vlan-aware` expects yes/no\n"); exit(1); }
+      else { cfg_error("`bridge-vlan-aware` expects yes/no"); goto fail; }
     }
     // `vrf <name>`: enslave this interface to an existing VRF device.
     else if (!strcasecmp("vrf", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`vrf` expects 1 arg (vrf device name)\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`vrf` expects 1 arg (vrf device name)"); goto fail; }
       free(iface->vrf_master);
       iface->vrf_master = strdup(dir->argv[0]);
     }
@@ -415,19 +414,23 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
     // Cumulus spells the automatic case `auto`; we allocate from a private
     // range rather than colliding with main(254)/local(255)/default(253).
     else if (!strcasecmp("vrf-table", dir->name) || !strcasecmp("vrf_table", dir->name)) {
-      if (dir->argc != 1) { fprintf(stderr, "`vrf-table` expects 1 arg (table id or `auto`)\n"); exit(1); }
+      if (dir->argc != 1) { cfg_error("`vrf-table` expects 1 arg (table id or `auto`)"); goto fail; }
       if (!strcasecmp(dir->argv[0], "auto")) {
         iface->vrf_table = vrf_table_auto(iface->name);
+        if (iface->vrf_table < 0) {
+          cfg_error("`vrf-table auto`: no free table id");
+          goto fail;
+        }
       } else {
         char *end = NULL;
         long v = strtol(dir->argv[0], &end, 10);
         if (!end || *end || v <= 0 || v > 2147483647L) {
-          fprintf(stderr, "`vrf-table` expects a positive table id or `auto`, got `%s`\n", dir->argv[0]);
-          exit(1);
+          cfg_error("`vrf-table` expects a positive table id or `auto`, got `%s`", dir->argv[0]);
+          goto fail;
         }
         if (v == 253 || v == 254 || v == 255) {
-          fprintf(stderr, "`vrf-table` %ld is a reserved table (default/main/local)\n", v);
-          exit(1);
+          cfg_error("`vrf-table` %ld is a reserved table (default/main/local)", v);
+          goto fail;
         }
         iface->vrf_table = (int)v;
       }
@@ -438,6 +441,12 @@ struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void
   }
 
   return dir;
+
+// The iface is already linked into the module list by this point, so
+// ifaces_free() owns it; only the directive needs releasing here.
+fail:
+  cnf_directive_free(dir);
+  return NULL;
 }
 
 void ifaces_register(void) {

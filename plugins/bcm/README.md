@@ -1,14 +1,14 @@
 # plugins/bcm
 
-Broadcom XGS dataplane backend for `unosd`.
+Broadcom XGS dataplane backend for `linkd`.
 
-This is **not** built by the `unosd` build. It is built and shipped by the
+This is **not** built by the `linkd` build. It is built and shipped by the
 `openbcm` package, which is installed only on hardware that has a Broadcom
 switching ASIC.
 
-That split is deliberate: a UNOS image is byte-identical on every machine.
+That split is deliberate: the OS image is byte-identical on every machine.
 Hardware capability arrives as a package, not as a separate image flavour.
-`unosd` dlopens whatever it finds in `/usr/lib/unos/dataplane/`, so on a box
+`linkd` dlopens whatever it finds in `/usr/lib/linkd/dataplane/`, so on a box
 without an ASIC the directory is simply empty and the built-in kernel
 dataplane is used instead.
 
@@ -17,11 +17,11 @@ dataplane is used instead.
 A plugin is a shared object exporting exactly one symbol:
 
 ```c
-struct dp_ops unos_dataplane_ops;
+struct dp_ops linkd_dataplane_ops;
 ```
 
-`dp_ops` is declared in `src/unosd/src/dataplane.h`. The `abi` field must equal
-`UNOS_DATAPLANE_ABI` or the plugin is refused at load time.
+`dp_ops` is declared in `src/dataplane.h`. The `abi` field must equal
+`LINKD_DATAPLANE_ABI` or the plugin is refused at load time.
 
 `probe()` must be cheap and side-effect free. It runs against every registered
 backend before one is chosen. This backend probes for `/dev/linux-kernel-bde`,

@@ -1,5 +1,5 @@
-#ifndef __UNOS_DATAPLANE_H__
-#define __UNOS_DATAPLANE_H__
+#ifndef __LINKD_DATAPLANE_H__
+#define __LINKD_DATAPLANE_H__
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -12,15 +12,15 @@
 // Until then the structs below are fluid: extend freely without bumping.
 // Plugins declaring a different ABI are refused at load time rather than
 // crashing us later.
-#define UNOS_DATAPLANE_ABI 1
+#define LINKD_DATAPLANE_ABI 1
 
 // Where dlopen'd backends live. The openbcm package drops its backend here;
 // on hardware without a switching ASIC the directory is simply empty and we
 // fall back to the built-in kernel dataplane.
-#define UNOS_DATAPLANE_DIR "/usr/lib/unos/dataplane"
+#define LINKD_DATAPLANE_DIR "/usr/lib/linkd/dataplane"
 
 // Symbol every plugin must export
-#define UNOS_DATAPLANE_SYM "unos_dataplane_ops"
+#define LINKD_DATAPLANE_SYM "linkd_dataplane_ops"
 
 enum dp_fec {
   DP_FEC_UNSET = 0,
@@ -36,7 +36,7 @@ struct dp_addr {
   uint8_t prefixlen;
 };
 
-// Physical-layer properties of a switch port, from /etc/unos/ports.cnf.
+// Physical-layer properties of a switch port, from /etc/linkd/ports.cnf.
 //
 // Deliberately narrow: anything the kernel already models on a netdev (MTU,
 // admin state, addresses, MAC) is owned by ifupdown and reaches us through
@@ -113,7 +113,7 @@ struct dp_ops {
 // Built-in backend. Always available, always probes successfully.
 const struct dp_ops * dp_kernel_ops(void);
 
-// Load plugins from UNOS_DATAPLANE_DIR. Safe to call when the directory is
+// Load plugins from LINKD_DATAPLANE_DIR. Safe to call when the directory is
 // absent or empty.
 int dp_plugins_load(const char *dir);
 
@@ -126,4 +126,4 @@ const struct dp_ops * dp_active(void);
 int  dp_init(void);
 void dp_fini(void);
 
-#endif // __UNOS_DATAPLANE_H__
+#endif // __LINKD_DATAPLANE_H__

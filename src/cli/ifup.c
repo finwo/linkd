@@ -6,12 +6,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include "config/daemon.h"
 #include "registry.h"
 
-#define UNOS_IPC_PATH "/run/unosd.sock"
 
 int main_ifup(int argc, char *argv[]) {
-  // ifup <if> -- thin wrapper, same socket logic as unosc but fixed command
+  // ifup <if> -- thin wrapper, same socket logic as linkctl but fixed command
   if (argc < 2) {
     fprintf(stderr, "usage: ifup <interface>\n");
     return 1;
@@ -24,18 +24,19 @@ int main_ifup(int argc, char *argv[]) {
   }
   len += snprintf(out+len, sizeof(out)-len, "\n");
 
+  const char *sockpath = linkd_client_socket();
   int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) { perror("socket"); return 1; }
   struct sockaddr_un addr = {0};
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, UNOS_IPC_PATH, sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, sockpath, sizeof(addr.sun_path)-1);
   if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    fprintf(stderr, "ifup: connect %s failed: %s\nIs unosd running?\n", UNOS_IPC_PATH, strerror(errno));
+    fprintf(stderr, "ifup: connect %s failed: %s\nIs linkd running?\n", sockpath, strerror(errno));
     close(sock);
     return 1;
   }
   if (write(sock, out, len) != len) { perror("write"); close(sock); return 1; }
-  // Half-close: signals EOF to unosd so it stops reading and replies. Without this
+  // Half-close: signals EOF to linkd so it stops reading and replies. Without this
   // the server blocks waiting for a second command until its receive timeout.
   shutdown(sock, SHUT_WR);
   char buf[4096];

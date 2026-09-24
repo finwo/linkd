@@ -1,5 +1,5 @@
-#ifndef __UNOS_NETLINK_H__
-#define __UNOS_NETLINK_H__
+#ifndef __LINKD_NETLINK_H__
+#define __LINKD_NETLINK_H__
 
 #include <stdint.h>
 
@@ -15,4 +15,4 @@ void nl_request_stop(void);                         // async-signal-safe stop fl
 int nl_dump(int fd, uint16_t type, int family);     // one GET*+DUMP, replies via handle_nlmsg
 int nl_resync(int fd);                              // filter_reset + dumps + dp resync; 0 ok, -1 fail
 
-#endif // __UNOS_NETLINK_H__
+#endif // __LINKD_NETLINK_H__

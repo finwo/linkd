@@ -1,5 +1,5 @@
-#ifndef __UNOS_DATAPLANE_REGISTRY_H__
-#define __UNOS_DATAPLANE_REGISTRY_H__
+#ifndef __LINKD_DATAPLANE_REGISTRY_H__
+#define __LINKD_DATAPLANE_REGISTRY_H__
 
 #include "dataplane.h"
 
@@ -7,4 +7,4 @@
 // match or which omit mandatory entry points.
 int dp_register(const struct dp_ops *ops);
 
-#endif // __UNOS_DATAPLANE_REGISTRY_H__
+#endif // __LINKD_DATAPLANE_REGISTRY_H__

@@ -1,5 +1,5 @@
-#ifndef __UNOS_NETLINK_FILTER_H__
-#define __UNOS_NETLINK_FILTER_H__
+#ifndef __LINKD_NETLINK_FILTER_H__
+#define __LINKD_NETLINK_FILTER_H__
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,4 +28,4 @@ bool nl_filter_mgmt_name(const char *ifname);
 bool nl_table_allowed(uint32_t table);
 bool nl_route_allowed(int family, uint8_t type, uint8_t scope, uint32_t table);
 
-#endif // __UNOS_NETLINK_FILTER_H__
+#endif // __LINKD_NETLINK_FILTER_H__

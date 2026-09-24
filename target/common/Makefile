@@ -1,6 +1,6 @@
 TARGET?=
 
-BIN=unosd
+BIN=linkd
 
 SRC:=
 SRC+=$(wildcard src/*.c)

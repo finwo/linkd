@@ -7,7 +7,7 @@ SDK?=
 CFLAGS?=-Wall -Wextra -O2
 CFLAGS+=-fPIC
 
-# unosd's dataplane contract
+# linkd's dataplane contract
 INCLUDES:=
 INCLUDES+=-I ../../src
 
@@ -46,4 +46,4 @@ clean:
 
 .PHONY: install
 install: $(BIN)
-	install -Dm0755 $(BIN) $(DESTDIR)/usr/lib/unos/dataplane/$(BIN)
+	install -Dm0755 $(BIN) $(DESTDIR)/usr/lib/linkd/dataplane/$(BIN)

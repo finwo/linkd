@@ -1,5 +1,5 @@
-#ifndef __UNOS_CONFIG_IFACES_H__
-#define __UNOS_CONFIG_IFACES_H__
+#ifndef __LINKD_CONFIG_IFACES_H__
+#define __LINKD_CONFIG_IFACES_H__
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,7 +16,7 @@ struct iface_addr {
   struct iface_addr *next;
 };
 
-struct unos_iface {
+struct linkd_iface {
   char               *name;    // e.g., "eth0", "swp1.100" -- cumulus style `iface <name>` preferred
   char               *method;  // "static", "dhcp", "loopback", "manual" -- optional, defaults to "static" when `iface <name>` used without `inet`
   char               *family;  // "inet", "inet6" -- optional, NULL when cumulus style
@@ -44,22 +44,22 @@ struct unos_iface {
   int                 vrf_table;  // -1 unset, otherwise 1..2^31-1
   char               *vrf_master; // NULL unset
   int                 auto_flag; // 1 if listed in auto
-  struct unos_iface  *next;
+  struct linkd_iface  *next;
 };
 
-// Shared classification. Previously duplicated in cli/unosd.c and ipc.c, which
+// Shared classification. Previously duplicated in cli/linkd.c and ipc.c, which
 // let the two drift; keep exactly one definition.
-bool iface_is_bridge(const struct unos_iface *ifc);
-bool iface_is_vrf(const struct unos_iface *ifc);
+bool iface_is_bridge(const struct linkd_iface *ifc);
+bool iface_is_vrf(const struct linkd_iface *ifc);
 
 void ifaces_register(void);
 
 struct cnf_directive * cfg_parse_auto(FILE *fd, struct cnf_directive *dir, void *user);
 struct cnf_directive * cfg_parse_iface(FILE *fd, struct cnf_directive *dir, void *user);
 
-struct unos_iface * ifaces_list(void);
-struct unos_iface * ifaces_find(const char *name);
+struct linkd_iface * ifaces_list(void);
+struct linkd_iface * ifaces_find(const char *name);
 void ifaces_free(void);
 void ifaces_set_auto(const char *name, int flag);
 
-#endif // __UNOS_CONFIG_IFACES_H__
+#endif // __LINKD_CONFIG_IFACES_H__

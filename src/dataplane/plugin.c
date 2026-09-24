@@ -1,11 +1,11 @@
 // Dataplane plugin loader.
 //
-// A UNOS image is identical on every machine. Hardware support arrives as a
+// A single linkd image is identical on every machine. Hardware support arrives as a
 // package: on a Broadcom box the `openbcm` package installs its kernel modules
-// and drops a backend into UNOS_DATAPLANE_DIR. On anything else the directory
+// and drops a backend into LINKD_DATAPLANE_DIR. On anything else the directory
 // is absent or empty and we quietly fall back to the built-in kernel backend.
 //
-// A plugin is a shared object exporting `struct dp_ops unos_dataplane_ops`.
+// A plugin is a shared object exporting `struct dp_ops linkd_dataplane_ops`.
 
 #include <dirent.h>
 #include <dlfcn.h>
@@ -25,7 +25,7 @@ int dp_plugins_load(const char *dir) {
   size_t         len;
   int            loaded = 0;
 
-  if (!dir) dir = UNOS_DATAPLANE_DIR;
+  if (!dir) dir = LINKD_DATAPLANE_DIR;
 
   dh = opendir(dir);
   if (!dh) {
@@ -46,9 +46,9 @@ int dp_plugins_load(const char *dir) {
       continue;
     }
 
-    ops = dlsym(handle, UNOS_DATAPLANE_SYM);
+    ops = dlsym(handle, LINKD_DATAPLANE_SYM);
     if (!ops) {
-      fprintf(stderr, "dataplane: %s: missing symbol `%s`\n", path, UNOS_DATAPLANE_SYM);
+      fprintf(stderr, "dataplane: %s: missing symbol `%s`\n", path, LINKD_DATAPLANE_SYM);
       dlclose(handle);
       continue;
     }

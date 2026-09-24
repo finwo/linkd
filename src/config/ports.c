@@ -9,15 +9,15 @@
 
 #include "ports.h"
 
-static struct unos_port *ports = NULL;
-static struct unos_port *ports_tail = NULL;
+static struct linkd_port *ports = NULL;
+static struct linkd_port *ports_tail = NULL;
 
-struct unos_port * ports_list(void) {
+struct linkd_port * ports_list(void) {
   return ports;
 }
 
-struct unos_port * ports_find(const char *name) {
-  struct unos_port *cur;
+struct linkd_port * ports_find(const char *name) {
+  struct linkd_port *cur;
   for ( cur = ports ; cur ; cur = cur->next ) {
     if (!strcmp(cur->name, name)) return cur;
   }
@@ -25,8 +25,8 @@ struct unos_port * ports_find(const char *name) {
 }
 
 void ports_free(void) {
-  struct unos_port *cur = ports;
-  struct unos_port *next;
+  struct linkd_port *cur = ports;
+  struct linkd_port *next;
 
   while (cur) {
     next = cur->next;
@@ -75,21 +75,30 @@ static int ports_is_reserved(const char *name) {
   return 0;
 }
 
+static void port_free(struct linkd_port *port) {
+  if (!port) return;
+  free(port->name);
+  free(port->breakout);
+  free(port);
+}
+
 struct cnf_directive * cfg_parse_port(FILE *fd, struct cnf_directive *dir, void *user) {
-  struct unos_port *port;
+  struct linkd_port *port;
   (void)user;
 
   if (dir->argc != 1) {
-    fprintf(stderr, "`port` directive accepts only 1 argument\n");
-    exit(1);
+    cfg_error("`port` directive accepts only 1 argument");
+    cnf_directive_free(dir);
+    return NULL;
   }
 
   if (ports_find(dir->argv[0])) {
-    fprintf(stderr, "duplicate `port` definition: %s\n", dir->argv[0]);
-    exit(1);
+    cfg_error("duplicate `port` definition: %s", dir->argv[0]);
+    cnf_directive_free(dir);
+    return NULL;
   }
 
-  port = calloc(1, sizeof(struct unos_port));
+  port = calloc(1, sizeof(struct linkd_port));
   port->name    = strdup(dir->argv[0]);
   port->fec     = DP_FEC_UNSET;
   port->autoneg = -1;
@@ -104,47 +113,44 @@ struct cnf_directive * cfg_parse_port(FILE *fd, struct cnf_directive *dir, void 
 
     else if (!strcasecmp("speed", dir->name)) {
       if (dir->argc != 1) {
-        fprintf(stderr, "`speed` directive accepts only 1 argument\n");
-        exit(1);
+        cfg_error("`speed` directive accepts only 1 argument");
+        goto fail;
       }
       port->speed = (uint32_t)strtoul(dir->argv[0], NULL, 10);
     }
 
     else if (!strcasecmp("fec", dir->name)) {
       if (dir->argc != 1) {
-        fprintf(stderr, "`fec` directive accepts only 1 argument\n");
-        exit(1);
+        cfg_error("`fec` directive accepts only 1 argument");
+        goto fail;
       }
       port->fec = ports_parse_fec(dir->argv[0]);
       if (port->fec == DP_FEC_UNSET) {
-        fprintf(stderr, "unknown `fec` value: %s\n", dir->argv[0]);
-        exit(1);
+        cfg_error("unknown `fec` value: %s", dir->argv[0]);
+        goto fail;
       }
     }
 
     else if (!strcasecmp("autoneg", dir->name)) {
       if (dir->argc != 1) {
-        fprintf(stderr, "`autoneg` directive accepts only 1 argument\n");
-        exit(1);
+        cfg_error("`autoneg` directive accepts only 1 argument");
+        goto fail;
       }
       port->autoneg = ports_parse_bool(dir->argv[0]);
     }
 
     else if (!strcasecmp("breakout", dir->name)) {
       if (dir->argc != 1) {
-        fprintf(stderr, "`breakout` directive accepts only 1 argument\n");
-        exit(1);
+        cfg_error("`breakout` directive accepts only 1 argument");
+        goto fail;
       }
       if (port->breakout) free(port->breakout);
       port->breakout = strdup(dir->argv[0]);
     }
 
     else if (ports_is_reserved(dir->name)) {
-      fprintf(stderr,
-              "`%s` is handled by ifupdown; configure it in "
-              "/etc/network/interfaces.d/ instead of ports.cnf\n",
-              dir->name);
-      exit(1);
+      cfg_error("`%s` is handled by the interfaces config, not ports", dir->name);
+      goto fail;
     }
 
     else {
@@ -163,6 +169,11 @@ struct cnf_directive * cfg_parse_port(FILE *fd, struct cnf_directive *dir, void 
 
   // Return the unparsed dir if set
   return dir;
+
+fail:
+  port_free(port);
+  cnf_directive_free(dir);
+  return NULL;
 }
 
 void ports_register(void) {

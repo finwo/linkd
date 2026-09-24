@@ -1,5 +1,6 @@
 #include <glob.h>
 #include <libgen.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -22,6 +23,21 @@ static struct cfg_ns ns_tab[CFG_MAX_NS];
 static int ns_count = 0;
 
 static struct cnf_directive *cfg_handle_source_directory(FILE *fd, struct cnf_directive *dir, void *user);
+
+static int cfg_errored = 0;
+
+void cfg_error(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  fprintf(stderr, "config: ");
+  vfprintf(stderr, fmt, ap);
+  fprintf(stderr, "\n");
+  va_end(ap);
+  cfg_errored = 1;
+}
+
+int  cfg_error_occurred(void) { return cfg_errored; }
+void cfg_error_reset(void)    { cfg_errored = 0; }
 
 struct cfg_ns *cfg_ns_get(const char *name) {
   int i;
@@ -210,6 +226,10 @@ int cfg_parse(struct cfg_ns *ns, const char *wd, FILE *fd, void *user) {
     for(i = 0 ; i < ns->count ; i++) {
       if (!strcasecmp(ns->h_name[i], dir->name)) {
         dir = ns->h_fn[i](fd, dir, user);
+        if (cfg_error_occurred()) {
+          if (dir) cnf_directive_free(dir);
+          return CFG_RET_ERROR;
+        }
         if (dir) goto cfg_parse_reparse;
         break;
       }
@@ -218,6 +238,7 @@ int cfg_parse(struct cfg_ns *ns, const char *wd, FILE *fd, void *user) {
     if (i == ns->count) {
       // Here = not found
       fprintf(stderr, "Unknown directive: %s\n", dir->name);
+      cnf_directive_free(dir);
       return CFG_RET_ERROR;
     }
   }

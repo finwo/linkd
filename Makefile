@@ -1,6 +1,6 @@
 TARGET:=linux-glibc-amd64
 
-BIN:=unosd
+BIN:=linkd
 
 .PHONY: default
 default: build/${TARGET}/${BIN}

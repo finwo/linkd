@@ -16,6 +16,7 @@ extern "C" {
 #include "cofyc/argparse.h"
 #include "rxi/log.h"
 
+#include "config/daemon.h"
 #include "config/ports.h"
 #include "config/ifaces.h"
 #include "dataplane.h"
@@ -64,79 +65,9 @@ static void stop_handler(int sig) {
   nl_request_stop();
 }
 
-// Port and interface configuration live in either:
-//   <dir>/ports, <dir>/interfaces      single files, or
-//   <dir>/ports.d/*.cnf, <dir>/interfaces.d/*.cnf  drop-ins
-//
-// Rather than growing the config API, the drop-in case is handed to the parser
-// as an in-memory config consisting of `source` -- the parser expands it.
-static int load_ports(const char *dir) {
-  char  path[1024];
-  char  stub[1024];
-  FILE *fd;
-  int   rc;
-
-  snprintf(path, sizeof(path), "%s/ports", dir);
-
-  if (access(path, R_OK) == 0) {
-    fd = fopen(path, "r");
-    if (!fd) {
-      perror("Could not open config file");
-      return CFG_RET_ERROR;
-    }
-  } else {
-    snprintf(stub, sizeof(stub), "source ports.d/*.cnf\n");
-    fd = fmemopen(stub, strlen(stub), "r");
-    if (!fd) {
-      perror("Could not open in-memory config");
-      return CFG_RET_ERROR;
-    }
-  }
-
-  rc = cfg_parse(cfg_ns_get("ports"), dir, fd, NULL);
-  if (rc < 0) {
-    log_error("Error during reading port configuration from %s", dir);
-  }
-
-  fclose(fd);
-  return rc;
-}
-
-static int load_interfaces(const char *dir) {
-  char  path[1024];
-  char  stub[1024];
-  FILE *fd;
-  int   rc;
-
-  snprintf(path, sizeof(path), "%s/interfaces", dir);
-
-  if (access(path, R_OK) == 0) {
-    fd = fopen(path, "r");
-    if (!fd) {
-      perror("Could not open config file");
-      return CFG_RET_ERROR;
-    }
-  } else {
-    snprintf(stub, sizeof(stub), "source interfaces.d/*.cnf\n");
-    fd = fmemopen(stub, strlen(stub), "r");
-    if (!fd) {
-      perror("Could not open in-memory config");
-      return CFG_RET_ERROR;
-    }
-  }
-
-  rc = cfg_parse(cfg_ns_get("interfaces"), dir, fd, NULL);
-  if (rc < 0) {
-    log_error("Error during reading interfaces configuration from %s", dir);
-  }
-
-  fclose(fd);
-  return rc;
-}
-
 static int apply_ports(void) {
   const struct dp_ops *dp = dp_active();
-  struct unos_port    *cur;
+  struct linkd_port    *cur;
   struct dp_port       port;
 
   if (!dp || !dp->port_apply) return 0;
@@ -164,7 +95,7 @@ static int apply_ports(void) {
 // it. Bridges need no such phase: membership is declared on the bridge
 // (`bridge-ports`), not on the member.
 static int apply_interfaces(void) {
-  struct unos_iface *cur;
+  struct linkd_iface *cur;
 
   // Phase 1: bring every VRF device into existence.
   for (cur = ifaces_list(); cur; cur = cur->next) {
@@ -284,10 +215,10 @@ static void ready_remove(const char *path) {
   unlink(path);
 }
 
-int main_unosd(int argc, char **argv) {
+int main_linkd(int argc, char **argv) {
   // Cast for argparse which wants const char**
   const char **c_argv = (const char **)argv;
-  char *config_dir = "/etc/network";
+  char *config_path = LINKD_CONFIG_PATH;
   char *dataplane  = NULL;
   char *loglevel = "info";
   char *logfile_path = NULL;
@@ -298,7 +229,7 @@ int main_unosd(int argc, char **argv) {
 
   struct argparse_option options[] = {
     OPT_HELP(),
-    OPT_STRING('c', "config", &config_dir, "Configuration directory", NULL, 0, 0),
+    OPT_STRING('c', "config", &config_path, "Configuration file (default: " LINKD_CONFIG_PATH ")", NULL, 0, 0),
     OPT_STRING('d', "dataplane", &dataplane, "Force a dataplane backend", NULL, 0, 0),
     OPT_STRING('v', "verbosity", &loglevel, "log verbosity: fatal,error,warn,info,debug,trace (default: info)", NULL, 0, 0),
     OPT_STRING(0, "log", &logfile_path, "also write log to file (SIGHUP reopens for logrotate)", NULL, 0, 0),
@@ -308,6 +239,7 @@ int main_unosd(int argc, char **argv) {
   };
 
   // Initialize components
+  daemon_cfg_register();
   ports_register();
   ifaces_register();
   ipc_register();
@@ -369,17 +301,22 @@ int main_unosd(int argc, char **argv) {
   signal(SIGTERM, stop_handler);
   signal(SIGPIPE, SIG_IGN);
 
-  if (load_ports(config_dir) < 0) {
+  if (daemon_cfg_load(config_path) < 0) {
     return 1;
   }
-  if (load_interfaces(config_dir) < 0) {
+  const struct linkd_daemon_cfg *dcfg = daemon_cfg();
+
+  if (load_namespace("ports", dcfg->ports, dcfg->ports_n) < 0) {
+    return 1;
+  }
+  if (load_namespace("interfaces", dcfg->iface, dcfg->iface_n) < 0) {
     return 1;
   }
   {
     int n = 0;
-    for (struct unos_iface *c = ifaces_list(); c; c = c->next) n++;
-    log_info("main: loaded %d interfaces from %s", n, config_dir);
-    for (struct unos_iface *c = ifaces_list(); c; c = c->next) {
+    for (struct linkd_iface *c = ifaces_list(); c; c = c->next) n++;
+    log_info("main: loaded %d interfaces", n);
+    for (struct linkd_iface *c = ifaces_list(); c; c = c->next) {
       log_info("main: iface %s method %s auto %d addrs %s", c->name, c->method ? c->method : "(null)", c->auto_flag, c->addrs ? c->addrs->address : "(none)");
     }
   }
@@ -391,7 +328,7 @@ int main_unosd(int argc, char **argv) {
   // The built-in kernel backend is registered first so it acts as the
   // fallback; plugins installed by hardware packages are probed ahead of it.
   dp_register(dp_kernel_ops());
-  dp_plugins_load(UNOS_DATAPLANE_DIR);
+  dp_plugins_load(LINKD_DATAPLANE_DIR);
 
   if (dp_select(dataplane) != DP_RET_OK) {
     return 1;
@@ -461,9 +398,8 @@ int main_unosd(int argc, char **argv) {
 }
 
 __attribute__((constructor))
-static void register_unosd(void) {
-  cli_register("unosd", main_unosd);
-  cli_register("unos", main_unosd);
+static void register_linkd(void) {
+  cli_register("linkd", main_linkd);
 }
 
 #ifdef __cplusplus

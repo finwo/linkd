@@ -8,12 +8,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "config/daemon.h"
 #include "registry.h"
 
-#define UNOS_IPC_PATH "/run/unosd.sock"
 
-int main_unosc(int argc, char *argv[]) {
-  // unosc is a tiny shim: unosc <cmd> [args...] -> send "cmd [args...]\n" to /run/unosd.sock
+int main_linkctl(int argc, char *argv[]) {
+  // linkctl is a tiny shim: linkctl <cmd> [args...] -> send "cmd [args...]\n" to /var/run/linkd.sock
   // It does NOT handle being called as ifup via argv[0]; those have their own mains.
   if (argc < 2) {
     fprintf(stderr, "usage: %s <ifup|ifdown|ifquery|ifreload> [args...]\n", argv[0]);
@@ -26,6 +26,7 @@ int main_unosc(int argc, char *argv[]) {
   struct sockaddr_un addr;
   char buf[4096];
 
+  const char *sockpath = linkd_client_socket();
   sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) {
     perror("socket");
@@ -34,11 +35,11 @@ int main_unosc(int argc, char *argv[]) {
 
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, UNOS_IPC_PATH, sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, sockpath, sizeof(addr.sun_path)-1);
 
   if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    fprintf(stderr, "unosc: connect %s failed: %s\n", UNOS_IPC_PATH, strerror(errno));
-    fprintf(stderr, "Is unosd running?\n");
+    fprintf(stderr, "linkctl: connect %s failed: %s\n", sockpath, strerror(errno));
+    fprintf(stderr, "Is linkd running?\n");
     close(sock);
     return 1;
   }
@@ -57,7 +58,7 @@ int main_unosc(int argc, char *argv[]) {
       close(sock);
       return 1;
     }
-    // Half-close: signals EOF to unosd so it stops reading and replies. Without
+    // Half-close: signals EOF to linkd so it stops reading and replies. Without
     // this the server blocks waiting for a second command until its timeout.
     shutdown(sock, SHUT_WR);
   }
@@ -90,6 +91,6 @@ int main_unosc(int argc, char *argv[]) {
 }
 
 __attribute__((constructor))
-static void register_unosc(void) {
-  cli_register("unosc", main_unosc);
+static void register_linkctl(void) {
+  cli_register("linkctl", main_linkctl);
 }

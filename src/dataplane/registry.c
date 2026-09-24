@@ -15,9 +15,9 @@ static const struct dp_ops *active        = NULL;
 int dp_register(const struct dp_ops *ops) {
   if (!ops) return DP_RET_ERROR;
 
-  if (ops->abi != UNOS_DATAPLANE_ABI) {
+  if (ops->abi != LINKD_DATAPLANE_ABI) {
     fprintf(stderr, "dataplane: refusing backend `%s`: abi %u, expected %u\n",
-            ops->name ? ops->name : "(unnamed)", ops->abi, UNOS_DATAPLANE_ABI);
+            ops->name ? ops->name : "(unnamed)", ops->abi, LINKD_DATAPLANE_ABI);
     return DP_RET_ERROR;
   }
 

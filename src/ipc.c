@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <libgen.h>
 #include <errno.h>
 #include <net/if.h>
 #include <stdio.h>
@@ -14,6 +15,7 @@
 #include "rxi/log.h"
 
 #include "util/config.h"
+#include "config/daemon.h"
 #include "config/ifaces.h"
 #include "config/ports.h"
 #include "ipc.h"
@@ -21,6 +23,7 @@
 #include "netlink/rtnl.h"
 
 static int ipc_sock = -1;
+static const char *ipc_path = NULL;
 
 int ipc_fd(void) {
   return ipc_sock;
@@ -28,9 +31,19 @@ int ipc_fd(void) {
 
 int ipc_init(void) {
   struct sockaddr_un addr;
-  // Ensure /run exists (tmpfs mount in rcS, but early boot may not have it)
-  mkdir("/run", 0755);
-  unlink(UNOS_IPC_PATH);
+
+  ipc_path = daemon_cfg_unix_socket();
+  if (!ipc_path) {
+    log_error("ipc: no unix:// listen address configured");
+    return -1;
+  }
+
+  // Create the socket's directory; early boot may not have mounted it yet.
+  {
+    char *d = strdup(ipc_path);
+    if (d) { mkdir(dirname(d), 0755); free(d); }
+  }
+  unlink(ipc_path);
 
   ipc_sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
   if (ipc_sock < 0) {
@@ -40,28 +53,28 @@ int ipc_init(void) {
 
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, UNOS_IPC_PATH, sizeof(addr.sun_path)-1);
+  strncpy(addr.sun_path, ipc_path, sizeof(addr.sun_path)-1);
 
   if (bind(ipc_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    log_error("ipc: bind %s failed: %s", UNOS_IPC_PATH, strerror(errno));
+    log_error("ipc: bind %s failed: %s", ipc_path, strerror(errno));
     close(ipc_sock);
     ipc_sock = -1;
     return -1;
   }
 
-  if (chmod(UNOS_IPC_PATH, 0600) != 0) {
-    log_warn("ipc: chmod %s failed: %s", UNOS_IPC_PATH, strerror(errno));
+  if (chmod(ipc_path, 0600) != 0) {
+    log_warn("ipc: chmod %s failed: %s", ipc_path, strerror(errno));
   }
 
   if (listen(ipc_sock, 8) != 0) {
     log_error("ipc: listen failed: %s", strerror(errno));
     close(ipc_sock);
     ipc_sock = -1;
-    unlink(UNOS_IPC_PATH);
+    unlink(ipc_path);
     return -1;
   }
 
-  log_info("ipc: listening on %s", UNOS_IPC_PATH);
+  log_info("ipc: listening on %s", ipc_path);
   return 0;
 }
 
@@ -70,7 +83,7 @@ void ipc_fini(void) {
     close(ipc_sock);
     ipc_sock = -1;
   }
-  unlink(UNOS_IPC_PATH);
+  unlink(ipc_path);
 }
 
 // Helpers to send response
@@ -199,7 +212,7 @@ int ipc_handle(void) {
     return -1;
   }
 
-  // Blocking, but never indefinitely: unosd is single-threaded, so a client that
+  // Blocking, but never indefinitely: linkd is single-threaded, so a client that
   // connects and then stalls would otherwise wedge the whole daemon (netlink
   // included). A short timeout bounds that without reintroducing the race.
   {
@@ -278,7 +291,7 @@ static int run_hook(const char *cmd) {
 
 static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
   (void)uid;
-  struct unos_iface *iface = ifaces_find(ifname);
+  struct linkd_iface *iface = ifaces_find(ifname);
   if (!iface) {
     log_info("ipc: ifup %s (not in interfaces, just bringing link up)", ifname);
     if (rtnl_link_up(ifname) != 0) {
@@ -384,7 +397,7 @@ static int handle_ifup(FILE *out, const char *ifname, uid_t uid) {
 
 static int handle_ifdown(FILE *out, const char *ifname, uid_t uid) {
   (void)uid;
-  struct unos_iface *iface = ifaces_find(ifname);
+  struct linkd_iface *iface = ifaces_find(ifname);
   if (!iface) {
     log_info("ipc: ifdown %s (not in interfaces, just bringing link down)", ifname);
     if (rtnl_link_down(ifname) != 0) {
@@ -410,62 +423,37 @@ static int handle_ifdown(FILE *out, const char *ifname, uid_t uid) {
   return 0;
 }
 
+static int count_ifaces(void) {
+  int n = 0;
+  for (struct linkd_iface *c = ifaces_list(); c; c = c->next) n++;
+  return n;
+}
+
 static int handle_ifreload(FILE *out, uid_t uid) {
   (void)uid;
-  log_info("ipc: ifreload (diff-apply) start, old list has %d", ({
-    int n=0; for (struct unos_iface *c=ifaces_list();c;c=c->next) n++; n;
-  }));
+  log_info("ipc: ifreload (diff-apply) start, old list has %d", count_ifaces());
   // For now, just re-parse and apply all auto interfaces
   // TODO: implement diff-apply: compare old vs new lists
-  // Placeholder: reload config files
-  // We need to free old and re-parse (both ifaces and ports)
   ifaces_free();
   ports_free();
-  log_info("ipc: ifreload after free, list has %d", ({
-    int n=0; for (struct unos_iface *c=ifaces_list();c;c=c->next) n++; n;
-  }));
-  // Re-register is idempotent, but we need to reload
-  // Use same logic as main.c load_interfaces
-  char *dir = "/etc/network";
-  char path[1024];
-  char stub[1024];
-  FILE *fd;
-  snprintf(path, sizeof(path), "%s/interfaces", dir);
-  if (access(path, R_OK) == 0) {
-    fd = fopen(path, "r");
-    if (fd) {
-      cfg_parse(cfg_ns_get("interfaces"), dir, fd, NULL);
-      fclose(fd);
-    }
-  } else {
-    snprintf(stub, sizeof(stub), "source interfaces.d/*.cnf\n");
-    fd = fmemopen(stub, strlen(stub), "r");
-    if (fd) {
-      cfg_parse(cfg_ns_get("interfaces"), dir, fd, NULL);
-      fclose(fd);
-    }
+  log_info("ipc: ifreload after free, list has %d", count_ifaces());
+
+  // Same loader startup uses. Was a private copy hardcoding /etc/network,
+  // so --config was silently ignored here.
+  const struct linkd_daemon_cfg *dcfg = daemon_cfg();
+  if (load_namespace("interfaces", dcfg->iface, dcfg->iface_n) < 0) {
+    ipc_send_err(out, "ifreload: failed to reload interface configuration");
+    return -1;
   }
-  // Also reload ports?
-  snprintf(path, sizeof(path), "%s/ports", dir);
-  if (access(path, R_OK) == 0) {
-    fd = fopen(path, "r");
-    if (fd) {
-      cfg_parse(cfg_ns_get("ports"), dir, fd, NULL);
-      fclose(fd);
-    }
-  } else {
-    snprintf(stub, sizeof(stub), "source ports.d/*.cnf\n");
-    fd = fmemopen(stub, strlen(stub), "r");
-    if (fd) {
-      cfg_parse(cfg_ns_get("ports"), dir, fd, NULL);
-      fclose(fd);
-    }
+  if (load_namespace("ports", dcfg->ports, dcfg->ports_n) < 0) {
+    ipc_send_err(out, "ifreload: failed to reload port configuration");
+    return -1;
   }
   {
     int n = 0;
-    for (struct unos_iface *c = ifaces_list(); c; c = c->next) n++;
+    for (struct linkd_iface *c = ifaces_list(); c; c = c->next) n++;
     log_info("ipc: ifreload done, new list has %d", n);
-    for (struct unos_iface *c = ifaces_list(); c; c = c->next) {
+    for (struct linkd_iface *c = ifaces_list(); c; c = c->next) {
       log_info("ipc: ifreload iface %s", c->name);
     }
   }
@@ -473,7 +461,7 @@ static int handle_ifreload(FILE *out, uid_t uid) {
 }
 
 static int handle_ifquery(FILE *out, const char *ifname) {
-  struct unos_iface *cur;
+  struct linkd_iface *cur;
   int n = 0;
   for (cur = ifaces_list(); cur; cur = cur->next) n++;
   log_info("ipc: ifquery %s (list has %d)", ifname ? ifname : "(all)", n);

@@ -11,7 +11,7 @@
 //   - speed / FEC / autoneg are PHY properties of a real NIC, driven through
 //     ethtool, and meaningless in a VM
 //
-// Mirroring any of it back into the kernel would be circular. unosd on generic
+// Mirroring any of it back into the kernel would be circular. linkd on generic
 // hardware is therefore close to inert by design: it parses configuration,
 // validates it, and lets Linux do the work.
 //
@@ -51,7 +51,7 @@ static int kernel_resync(void) {
 }
 
 static const struct dp_ops kernel_ops = {
-  .abi        = UNOS_DATAPLANE_ABI,
+  .abi        = LINKD_DATAPLANE_ABI,
   .name       = "kernel",
   .probe      = kernel_probe,
   .init       = kernel_init,

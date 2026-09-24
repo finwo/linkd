@@ -101,8 +101,13 @@ static int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
   return 0;
 }
 
+// Returns the nest's byte offset for addattr_nested_end(), or -1 on overflow.
 static int addattr_nested_start(struct nlmsghdr *n, int maxlen, int type) {
   struct rtattr *rta = (struct rtattr*)(((char*)n) + NLMSG_ALIGN(n->nlmsg_len));
+  if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(RTA_LENGTH(0)) > (unsigned)maxlen) {
+    log_error("rtnl: addattr_nested_start overflow");
+    return -1;
+  }
   rta->rta_type = type;
   rta->rta_len = RTA_LENGTH(0);
   n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(sizeof(*rta));
@@ -377,8 +382,10 @@ int rtnl_vlan_create(const char *name, const char *rawdev, int vlan_id) {
   addattr_l(nh, sizeof(buf), IFLA_IFNAME, name, strlen(name)+1);
   addattr_l(nh, sizeof(buf), IFLA_LINK, &rawidx, sizeof(rawidx));
   int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  if (nest < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "vlan", 5);
   int nest2 = addattr_nested_start(nh, sizeof(buf), IFLA_INFO_DATA);
+  if (nest2 < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_VLAN_ID, &vlan_id, sizeof(vlan_id));
   addattr_nested_end(nh, nest2);
   addattr_nested_end(nh, nest);
@@ -401,6 +408,7 @@ int rtnl_bridge_create(const char *name) {
   ifi->ifi_family = AF_UNSPEC;
   addattr_l(nh, sizeof(buf), IFLA_IFNAME, name, strlen(name)+1);
   int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  if (nest < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "bridge", 7);
   addattr_nested_end(nh, nest);
   return rtnl_talk(nh);
@@ -429,8 +437,10 @@ int rtnl_vrf_create(const char *name, uint32_t table) {
   ifi->ifi_family = AF_UNSPEC;
   addattr_l(nh, sizeof(buf), IFLA_IFNAME, name, strlen(name)+1);
   int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  if (nest < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "vrf", 4);
   int nest2 = addattr_nested_start(nh, sizeof(buf), IFLA_INFO_DATA);
+  if (nest2 < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_VRF_TABLE, &table, sizeof(table));
   addattr_nested_end(nh, nest2);
   addattr_nested_end(nh, nest);
@@ -476,8 +486,10 @@ int rtnl_bridge_set_stp(const char *name, bool on) {
   ifi->ifi_family = AF_UNSPEC;
   ifi->ifi_index = ifindex;
   int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  if (nest < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "bridge", 7);
   int nest2 = addattr_nested_start(nh, sizeof(buf), IFLA_INFO_DATA);
+  if (nest2 < 0) return -1;
   uint8_t stp = on ? 1 : 0;
   addattr_l(nh, sizeof(buf), IFLA_BR_STP_STATE, &stp, sizeof(stp));
   addattr_nested_end(nh, nest2);
@@ -499,8 +511,10 @@ int rtnl_bridge_set_vlan_aware(const char *name, bool on) {
   ifi->ifi_family = AF_UNSPEC;
   ifi->ifi_index = ifindex;
   int nest = addattr_nested_start(nh, sizeof(buf), IFLA_LINKINFO);
+  if (nest < 0) return -1;
   addattr_l(nh, sizeof(buf), IFLA_INFO_KIND, "bridge", 7);
   int nest2 = addattr_nested_start(nh, sizeof(buf), IFLA_INFO_DATA);
+  if (nest2 < 0) return -1;
   uint8_t vlan = on ? 1 : 0;
   addattr_l(nh, sizeof(buf), IFLA_BR_VLAN_FILTERING, &vlan, sizeof(vlan));
   addattr_nested_end(nh, nest2);

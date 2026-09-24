@@ -1,10 +1,10 @@
-// Broadcom XGS dataplane backend for unosd.
+// Broadcom XGS dataplane backend for linkd.
 //
-// Built and shipped by the `openbcm` package, NOT by the unosd build. It is a
-// plugin precisely so that a single UNOS image runs unchanged on hardware with
+// Built and shipped by the `openbcm` package, NOT by the linkd build. It is a
+// plugin precisely so that a single OS image runs unchanged on hardware with
 // and without a switching ASIC: on a Broadcom box the openbcm package drops
-// this object into UNOS_DATAPLANE_DIR, everywhere else the directory stays
-// empty and unosd falls back to the built-in kernel backend.
+// this object into LINKD_DATAPLANE_DIR, everywhere else the directory stays
+// empty and linkd falls back to the built-in kernel backend.
 //
 // Building this requires the OpenBCM SDK headers and libbcm. See the README
 // next to this file.
@@ -106,8 +106,8 @@ static int bcm_resync(void) {
   return DP_RET_ERROR;
 }
 
-struct dp_ops unos_dataplane_ops = {
-  .abi        = UNOS_DATAPLANE_ABI,
+struct dp_ops linkd_dataplane_ops = {
+  .abi        = LINKD_DATAPLANE_ABI,
   .name       = "bcm",
   .probe      = bcm_probe,
   .init       = bcm_init,
