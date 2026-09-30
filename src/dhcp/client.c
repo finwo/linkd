@@ -73,6 +73,28 @@ static char *find_in_path(const char *bin) {
 }
 
 // ---------------------------------------------------------------------------
+
+// poll(2) is never restarted, so this drops nl_run out of its wait and the
+// reap at the top of that loop runs immediately. SA_RESTART keeps the
+// blocking waitpid in plugin.c from being interrupted.
+static void sigchld_noop(int sig) { (void)sig; }
+
+static void arm_sigchld(void) {
+  static int armed = 0;
+  if (armed) return;
+  armed = 1;
+
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = sigchld_noop;
+  sa.sa_flags   = SA_RESTART;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(SIGCHLD, &sa, NULL) != 0) {
+    log_warn("dhcp: sigaction SIGCHLD: %s", strerror(errno));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // process table
 
 static struct dhcp_proc *proc_find(const char *ifname) {
@@ -107,6 +129,7 @@ int dhcp_start(const char *ifname) {
     return -1;
   }
   const char *const *tpl = (const char *const *)cfg->dhcp_client;
+  arm_sigchld();
 
   char **argv = calloc(argc + 1, sizeof(char *));
   if (!argv) {

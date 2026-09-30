@@ -30,8 +30,17 @@ iface swp-static inet static
     address 10.9.9.9/24
 EOF
 
+# An empty netns, because reaping is driven by SIGCHLD waking poll(2): on a
+# host with ambient netlink traffic the loop spins anyway and a broken reap
+# still passes. 3s for the same reason -- the wake is causal, not timed.
+if unshare --user --map-root-user --net true 2>/dev/null; then
+  in_ns() { unshare --user --map-root-user --net "$@"; }
+else
+  in_ns() { "$@"; }
+fi
+
 run_linkd() {
-  timeout 15 env PATH="${T}/emptybin" DHCP_LOG="${T}/dhcp.log" \
+  in_ns timeout 3 env PATH="${T}/emptybin" DHCP_LOG="${T}/dhcp.log" \
     "${BIN}" --config "$1" --resync-interval 0 \
     >"${T}/linkd.log" 2>&1 || true
   cat "${T}/linkd.log"

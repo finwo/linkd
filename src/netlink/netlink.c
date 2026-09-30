@@ -587,6 +587,8 @@ int nl_run(int fd, int resync_interval_s) {
   clock_gettime(CLOCK_MONOTONIC, &last_resync);
 
   while (!nl_stop) {
+    dhcp_reap();
+
     // Netlink occupies slot 0; the IPC server contributes its listeners and
     // every live connection after it.
     struct pollfd pfds[1 + IPC_MAX_POLLFDS];
@@ -622,7 +624,6 @@ int nl_run(int fd, int resync_interval_s) {
       log_error("netlink: poll failed: %s", strerror(errno));
       return -1;
     }
-    dhcp_reap();
     if (!pr) continue;
 
     if (nfds > 1) ipc_dispatch(&pfds[1], nfds - 1);
