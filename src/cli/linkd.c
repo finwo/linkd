@@ -21,6 +21,7 @@ extern "C" {
 #include "config/ifaces.h"
 #include "dataplane.h"
 #include "dataplane/plugin.h"
+#include "dhcp.h"
 #include "ipc.h"
 #include "netlink/netlink.h"
 #include "netlink/rtnl.h"
@@ -161,9 +162,15 @@ static int apply_interfaces(void) {
     }
     log_info("apply_interfaces: link up %s", cur->name);
     rtnl_link_up(cur->name);
-    for (struct iface_addr *a = cur->addrs; a; a = a->next) {
-      log_info("apply_interfaces: addr %s dev %s", a->address, cur->name);
-      rtnl_addr_add(cur->name, a->address, a->netmask);
+    if (iface_method_is(cur, "dhcp")) {
+      if (dhcp_start(cur->name) != 0) log_error("apply_interfaces: dhcp failed for %s", cur->name);
+    }
+    // `manual` means the link only; addresses stay the operator's business.
+    if (!iface_method_is(cur, "manual")) {
+      for (struct iface_addr *a = cur->addrs; a; a = a->next) {
+        log_info("apply_interfaces: addr %s dev %s", a->address, cur->name);
+        rtnl_addr_add(cur->name, a->address, a->netmask);
+      }
     }
     if (cur->gateway) {
       log_info("apply_interfaces: gateway %s via %s", cur->gateway, cur->name);
@@ -215,7 +222,7 @@ static void ready_remove(const char *path) {
 int main_linkd(int argc, char **argv) {
   // Cast for argparse which wants const char**
   const char **c_argv = (const char **)argv;
-  char *config_path = LINKD_CONFIG_PATH;
+  char *config_path = NULL;
   char *loglevel = "info";
   char *logfile_path = NULL;
   char *ready_file = "";
@@ -340,7 +347,7 @@ int main_linkd(int argc, char **argv) {
     return 1;
   }
 
-  // Apply auto interfaces (needs netlink to be open for link creation, but we use system ip for now)
+  // After nl_open so the resync below observes what this creates.
   apply_interfaces();
 
   // Fail loud: never publish readiness on partial state; runit retries.
@@ -371,6 +378,7 @@ int main_linkd(int argc, char **argv) {
   ipc_fini();
 
   ready_remove(ready_file);
+  dhcp_stop_all();
   dp_stop();
   ports_free();
   ifaces_free();

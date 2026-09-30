@@ -18,6 +18,10 @@ struct linkd_daemon_cfg {
   char  **listen;   size_t listen_n;
   char   *authfile;
 
+  // argv template for `method dhcp`, each element rendered per interface.
+  // Empty means autodetect.
+  char  **dhcp_client; size_t dhcp_client_n;
+
   struct linkd_plugin_cfg *plugins;
 };
 
@@ -44,7 +48,8 @@ const char *linkd_client_socket(void);
 // Shared by startup and ifreload so the two cannot drift apart.
 int load_namespace(const char *ns_name, char **patterns, size_t n);
 
-// Default search path.
+// Drop-in dir, used only when LINKD_CONFIG_PATH is absent.
 #define LINKD_CONFIG_PATH "/etc/linkd.cnf"
+#define LINKD_CONFIG_DIR  "/etc/linkd"
 
 #endif // __LINKD_CONFIG_DAEMON_H__

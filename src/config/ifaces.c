@@ -56,6 +56,14 @@ bool iface_is_vrf(const struct linkd_iface *ifc) {
   return ifc && ifc->vrf_table >= 0;
 }
 
+// NULL method is `static`: `iface <name>` without `inet` is the preferred
+// spelling, so it must not read as an unset method.
+bool iface_method_is(const struct linkd_iface *ifc, const char *method) {
+  if (!ifc) return false;
+  if (!ifc->method) return !strcasecmp(method, "static");
+  return !strcasecmp(ifc->method, method);
+}
+
 // `vrf-table auto`: lowest free id at or above VRF_TABLE_AUTO_BASE.
 //
 // 1001 is not arbitrary -- it is where Cumulus starts, and the S5248F-ON we

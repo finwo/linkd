@@ -22,6 +22,7 @@
 #include "config/daemon.h"
 #include "config/ifaces.h"
 #include "config/ports.h"
+#include "dhcp.h"
 #include "ipc.h"
 #include "netlink/netlink.h"
 #include "netlink/rtnl.h"
@@ -177,9 +178,16 @@ static int do_ifup(struct ipc_conn *c, const char *ifname) {
     reply_err(c, "ifup %s: link up failed", ifname);
     return -1;
   }
-  for (struct iface_addr *a = iface->addrs; a; a = a->next) {
-    log_info("ipc: ifup %s addr %s", ifname, a->address);
-    rtnl_addr_add(ifname, a->address, a->netmask);
+  if (iface_method_is(iface, "dhcp") && dhcp_start(ifname) != 0) {
+    reply_err(c, "ifup %s: no dhcp client", ifname);
+    return -1;
+  }
+  // `manual` means the link only; addresses stay the operator's business.
+  if (!iface_method_is(iface, "manual")) {
+    for (struct iface_addr *a = iface->addrs; a; a = a->next) {
+      log_info("ipc: ifup %s addr %s", ifname, a->address);
+      rtnl_addr_add(ifname, a->address, a->netmask);
+    }
   }
   if (iface->gateway) {
     log_info("ipc: ifup %s gateway %s", ifname, iface->gateway);
@@ -215,6 +223,7 @@ static int do_ifdown(struct ipc_conn *c, const char *ifname) {
     reply_err(c, "pre-down hook failed for %s", ifname);
     return -1;
   }
+  dhcp_stop(ifname);
   if (rtnl_link_down(ifname) != 0) {
     reply_err(c, "ifdown %s failed", ifname);
     return -1;
@@ -235,6 +244,7 @@ static int count_ifaces(void) {
 static int do_ifreload(struct ipc_conn *c) {
   log_info("ipc: ifreload start, old list has %d", count_ifaces());
   // TODO: real diff-apply; this frees and re-parses.
+  dhcp_stop_all();
   ifaces_free();
   ports_free();
 

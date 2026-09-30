@@ -51,6 +51,7 @@ struct linkd_iface {
 // let the two drift; keep exactly one definition.
 bool iface_is_bridge(const struct linkd_iface *ifc);
 bool iface_is_vrf(const struct linkd_iface *ifc);
+bool iface_method_is(const struct linkd_iface *ifc, const char *method);
 
 void ifaces_register(void);
 

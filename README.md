@@ -65,17 +65,17 @@ up with `-include`; the one existing triple has none, so it is currently empty.
 
 ### Dependencies
 
-`target/common/.dep` declares three: `cofyc/argparse`, `finwo/cnfparse` and
-`rxi/log`. A fourth, `finwo/buf`, arrives transitively through cnfparse's own
-manifest. All four are compiled from source straight into the binary; nothing
-is linked against a prebuilt library.
+`target/common/.dep` declares five: `cofyc/argparse`, `finwo/cnfparse`,
+`finwo/pbkdf2`, `finwo/resp` and `rxi/log`. A sixth, `finwo/buf`, arrives
+transitively through cnfparse's own manifest. All are compiled from source
+straight into the binary; nothing is linked against a prebuilt library.
 
 They are fetched from branch tips rather than tags, and are not checksummed.
 That means a build is not reproducible across upstream changes, and a sha256 on
-a release tarball of *this* repository pins its own code but not the four
-libraries compiled into the resulting binary. This is a deliberate, known
-deviation from the pin-everything rule this project otherwise follows, and the fix
-(tagging those repositories) is upstream of here.
+a release tarball of *this* repository pins its own code but not the libraries
+compiled into the resulting binary. This is a deliberate, known deviation from
+the pin-everything rule this project otherwise follows, and the fix (tagging
+those repositories) is upstream of here.
 
 
 Testing
@@ -108,11 +108,17 @@ Configuration
     listen        unix:///var/run/linkd.sock
     listen        tcp://127.0.0.1:6789
     authfile      /etc/linkd.passwd
+    dhcp_client   udhcpc -f -i {{interface}}
     plugin        /usr/lib/linkd/bcm
 
 A missing file is not an error; the defaults above are what you get. Patterns
 are expanded by `source`, so one matching nothing is fine -- a system with no
 drop-ins is normal.
+
+When `/etc/linkd.cnf` does not exist, `/etc/linkd/*.cnf` is read instead. That
+is how a package configures linkd for something it ships without owning the
+main config file. It is a fallback, not a merge: an explicit `--config`, or an
+existing `/etc/linkd.cnf`, is the whole configuration.
 
 
 Clients and authorization
@@ -154,6 +160,29 @@ The file is refused outright if it is world-writable, and warned about if it is
 readable beyond its owner. **Binding a `tcp://` listener without an `authfile`
 is a hard error**, so an unauthenticated network listener cannot be created by
 forgetting something.
+
+
+DHCP
+----
+
+`iface eth0 inet dhcp` spawns the command named by `dhcp_client`, one per
+interface, stopped again on `ifdown`. No client is known by name: the package
+that ships one ships the config naming it. On UNOS that is busybox, which
+drops `/etc/linkd/udhcpc.cnf`.
+
+`{{interface}}` is substituted in each argv element, as many times as it
+appears, with the name exactly as written in `/etc/network/interfaces`.
+Substitution is per element, so no shell ever sees the name.
+
+The command must stay in the foreground -- `-f` for udhcpc and sdhcp, `-B` for
+dhcpcd. A client that forks leaves linkd holding a pid that has already exited,
+so `ifdown` could not stop it and a detached client would keep renewing a lease
+on an interface that is meant to be down.
+
+linkd does not apply the lease. The client does, or the script it runs does,
+and linkd observes the result through its netlink mirror like any other change.
+For udhcpc that script is `/usr/share/udhcpc/default.script`; without it a
+lease is obtained and nothing is configured.
 
 
 Dataplane plugins

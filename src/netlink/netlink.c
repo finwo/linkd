@@ -25,6 +25,7 @@
 
 #include "dataplane.h"
 #include "dataplane/plugin.h"
+#include "../dhcp.h"
 
 #include "filter.h"
 #include "netlink.h"
@@ -621,6 +622,7 @@ int nl_run(int fd, int resync_interval_s) {
       log_error("netlink: poll failed: %s", strerror(errno));
       return -1;
     }
+    dhcp_reap();
     if (!pr) continue;
 
     if (nfds > 1) ipc_dispatch(&pfds[1], nfds - 1);

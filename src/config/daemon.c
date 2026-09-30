@@ -88,6 +88,14 @@ static struct cnf_directive *h_listen(FILE *fd, struct cnf_directive *dir, void 
   return NULL;
 }
 
+// Not split on whitespace here: cnfparse already tokenised, so `dhcp_client
+// udhcpc -f -i {{interface}}` arrives as four argv elements and no shell is
+// ever involved in reassembling them.
+static struct cnf_directive *h_dhcp_client(FILE *fd, struct cnf_directive *dir, void *user) {
+  (void)fd; (void)user;
+  return take_list(dir, &cfg.dhcp_client, &cfg.dhcp_client_n);
+}
+
 static struct cnf_directive *h_authfile(FILE *fd, struct cnf_directive *dir, void *user) {
   (void)fd; (void)user;
   if (dir->argc != 1) {
@@ -175,6 +183,7 @@ void daemon_cfg_register(void) {
   cfg_register_directive(ns, "config_iface", h_config_iface);
   cfg_register_directive(ns, "listen",       h_listen);
   cfg_register_directive(ns, "authfile",     h_authfile);
+  cfg_register_directive(ns, "dhcp_client",  h_dhcp_client);
   cfg_register_directive(ns, "plugin",       h_plugin);
 }
 
@@ -196,13 +205,31 @@ static void apply_defaults(void) {
   }
 }
 
+// `source` expands the glob, so a directory with no drop-ins is not an error.
+static int load_confdir(void) {
+  static const char stub[] = "source " LINKD_CONFIG_DIR "/*.cnf\n";
+
+  FILE *fd = fmemopen((void *)stub, sizeof(stub) - 1, "r");
+  if (!fd) {
+    perror("Could not open in-memory config");
+    return CFG_RET_ERROR;
+  }
+
+  cfg_error_reset();
+  int rc = cfg_parse(cfg_ns_get("linkd"), NULL, fd, NULL);
+  fclose(fd);
+  return rc;
+}
+
 int daemon_cfg_load(const char *path) {
+  int explicit_path = path != NULL;
   if (!path) path = LINKD_CONFIG_PATH;
 
-  // Missing file is fine: defaults are a working configuration.
   if (access(path, R_OK) != 0) {
+    int rc = CFG_RET_OK;
+    if (!explicit_path) rc = load_confdir();
     apply_defaults();
-    return CFG_RET_OK;
+    return rc;
   }
 
   FILE *fd = fopen(path, "r");
@@ -293,6 +320,7 @@ void daemon_cfg_free(void) {
   list_free(&cfg.ports,  &cfg.ports_n);
   list_free(&cfg.iface,  &cfg.iface_n);
   list_free(&cfg.listen, &cfg.listen_n);
+  list_free(&cfg.dhcp_client, &cfg.dhcp_client_n);
   free(cfg.authfile);
   cfg.authfile = NULL;
 
